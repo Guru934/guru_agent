@@ -34,7 +34,7 @@ from cat_talker.assistant_features import (
     transcribe_audio_from_microphone,
     voice_input_status,
 )
-from cat_talker.db import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview
+from cat_talker.db import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
 from cat_talker.desktop_actions import handle_desktop_action
 from cat_talker.llm_router import get_installed_models, chat_completion_stream
 from cat_talker.orchestrator import AgentOrchestrator
@@ -751,7 +751,7 @@ class ScratchpadWindow(QMainWindow):
         self.current_ai_response_bubble_text_display: Optional[MarkdownTextBrowser] = None
         self.current_ai_response_content: str = ""
         self.voice_in_progress = False
-        self.orchestrator = AgentOrchestrator(default_model="qwen-6gb:latest")
+        self.orchestrator = AgentOrchestrator(default_model="qwen-6gb:latest", safe_mode=(get_preference("safe_mode", "true") == "true"))
 
         self.model_name_map = {
             "gemini-3.1-flash-live-preview": "Gemini Live (Cloud)",
@@ -815,6 +815,15 @@ class ScratchpadWindow(QMainWindow):
         self.model_dropdown.setObjectName("model_dropdown")
         self.populate_model_dropdown()
         top_bar_layout.addWidget(self.model_dropdown)
+        
+        self.safe_mode_checkbox = QCheckBox("Safe Mode")
+        self.safe_mode_checkbox.setStyleSheet("color: #c0caf5; font-weight: bold; margin-left: 10px;")
+        self.safe_mode_checkbox.setToolTip("Disable file writing and shell command tools completely.")
+        is_safe = get_preference("safe_mode", "true") == "true"
+        self.safe_mode_checkbox.setChecked(is_safe)
+        self.safe_mode_checkbox.stateChanged.connect(self.on_safe_mode_changed)
+        top_bar_layout.addWidget(self.safe_mode_checkbox)
+
         chat_layout.addWidget(top_bar_widget)
         
         # Main Message Feed (QScrollArea with QVBoxLayout)
@@ -923,7 +932,7 @@ class ScratchpadWindow(QMainWindow):
                 self.chat_history = messages
                 display_title = sessions[0]["title"]
                 if display_title == "New Chat":
-                    display_title = get_session_title_preview(self.current_session_id, max_len=24)
+                    display_title = get_session_title_preview, get_preference, set_preference(self.current_session_id, max_len=24)
                 self.session_title_label.setText(f"<b>{display_title}</b>")
                 
                 # Render messages
@@ -945,6 +954,7 @@ class ScratchpadWindow(QMainWindow):
         pass # Layout handles this dynamically
     
 
+
     def populate_model_dropdown(self):
         self.model_dropdown.clear()
         models = get_installed_models()
@@ -952,8 +962,25 @@ class ScratchpadWindow(QMainWindow):
         for model_id in models:
             display_models.append(self.model_name_map.get(model_id, model_id)) 
         self.model_dropdown.addItems(display_models)
+        
+        saved_model = get_preference("default_model", "")
+        if saved_model:
+            display_name = self.model_name_map.get(saved_model, saved_model)
+            index = self.model_dropdown.findText(display_name)
+            if index >= 0:
+                self.model_dropdown.setCurrentIndex(index)
+        
+        # Connect change event
+        try: self.model_dropdown.currentTextChanged.disconnect()
+        except: pass
+        self.model_dropdown.currentTextChanged.connect(self.on_model_changed)
+
+    def on_model_changed(self, model_display_name):
+        raw_model_id = self.reverse_model_name_map.get(model_display_name, model_display_name)
+        set_preference("default_model", raw_model_id)
 
     def refresh_sidebar(self):
+
         self.session_list.clear()
         sessions = get_sessions_with_counts()
         
@@ -986,7 +1013,7 @@ class ScratchpadWindow(QMainWindow):
                 for s in session_list_data:
                     display_title = s["title"]
                     if display_title == "New Chat":
-                        display_title = get_session_title_preview(s["id"], max_len=24)
+                        display_title = get_session_title_preview, get_preference, set_preference(s["id"], max_len=24)
                     
                     item = QListWidgetItem(self.session_list)
                     item.setData(Qt.ItemDataRole.UserRole, s["id"])
@@ -1340,19 +1367,32 @@ class ScratchpadWindow(QMainWindow):
     def confirm_action(self, title: str, prompt: str, details: str, action):
         from PyQt6.QtWidgets import QDialog
         
-        # Risk assessment simple logic
+        kind = "unknown"
         risk_level = "low"
         if "bash" in title.lower() or "shell" in title.lower() or "command" in title.lower():
             risk_level = "high"
+            kind = "bash"
         elif "write file" in title.lower() or "delete" in title.lower() or "open file" in title.lower():
             risk_level = "medium"
+            kind = "write"
+        elif "open website" in title.lower():
+            kind = "browser"
+
+        if kind != "unknown" and get_preference(f"allow_{kind}", "false") == "true":
+            try:
+                response = action()
+                self.add_system_message_to_feed(f"Auto-approved. Result:\n```\n{response}\n```", is_error=False)
+            except Exception as exc:
+                self.on_error_occurred("Action Error", f"Failed to complete auto-approved action: {exc}")
+            return
             
         dialog = ApprovalDialog(title, prompt, details, risk_level, self)
         result = dialog.exec()
 
         if result == QDialog.DialogCode.Accepted:
-            if dialog.is_always_allow_checked():
-                self.add_system_message_to_feed("Saved preference: always allow this action.", is_error=False)
+            if dialog.is_always_allow_checked() and kind != "unknown":
+                set_preference(f"allow_{kind}", "true")
+                self.add_system_message_to_feed(f"Saved preference: always allow {kind} actions.", is_error=False)
             try:
                 response = action()
                 self.add_system_message_to_feed(f"Action confirmed. Result:\n```\n{response}\n```", is_error=False)
@@ -1361,6 +1401,7 @@ class ScratchpadWindow(QMainWindow):
             return
 
         self.add_system_message_to_feed("Action cancelled by user.", is_error=False)
+
     def present_approval(self, action_id: str, prompt: str):
         if self.current_session_id is None:
             print("Warning: Attempted to present approval with no active session.")
@@ -1409,3 +1450,10 @@ def run_app():
 
 if __name__ == '__main__':
     sys.exit(run_app())
+
+    def on_safe_mode_changed(self, state):
+        is_safe = self.safe_mode_checkbox.isChecked()
+        set_preference("safe_mode", "true" if is_safe else "false")
+        self.orchestrator.safe_mode = is_safe
+        mode_text = "enabled. I will no longer rewrite files or run shell commands without being explicitly commanded as a local tool." if is_safe else "disabled. I now have agentic write/shell permissions again."
+        self.add_system_message_to_feed(f"Safe Mode {mode_text}", is_error=False)

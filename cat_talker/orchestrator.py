@@ -20,7 +20,8 @@ class AgentOrchestrator:
     - delegate: request tool / agent execution for file/search/shell work
     """
 
-    def __init__(self, default_model: str = "qwen2.5-coder"):
+    def __init__(self, default_model: str = "qwen2.5-coder", safe_mode: bool = False):
+        self.safe_mode = safe_mode
         self.default_model = default_model
 
     def build_context_instruction(self, plan: OrchestrationPlan) -> str:
@@ -70,10 +71,11 @@ class AgentOrchestrator:
                 tool_calls.append("search")
             if any(k in lowered for k in ["read", "file", "open", "review", "check the code", "inspect the file"]):
                 tool_calls.append("read_file")
-            if any(k in lowered for k in ["write", "edit", "update", "modify"]):
-                tool_calls.append("write_file")
-            if any(k in lowered for k in ["command", "bash", "shell", "run"]):
-                tool_calls.append("bash")
+            if not self.safe_mode:
+                if any(k in lowered for k in ["write", "edit", "update", "modify"]):
+                    tool_calls.append("write_file")
+                if any(k in lowered for k in ["command", "bash", "shell", "run"]):
+                    tool_calls.append("bash")
             return OrchestrationPlan(
                 route="delegate",
                 preferred_model=self._choose_model_for_task(lowered),

@@ -43,6 +43,16 @@ def init_db():
         """
     )
 
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -55,6 +65,16 @@ def create_session(model_id: str = "qwen2.5-coder") -> str:
         "INSERT INTO sessions (id, title, model_id) VALUES (?, ?, ?)",
         (session_id, "New Chat", model_id),
     )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
     return session_id
@@ -69,6 +89,16 @@ def purge_empty_sessions():
         WHERE id NOT IN (SELECT DISTINCT session_id FROM messages)
         """
     )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -128,6 +158,16 @@ def insert_message(
         "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (session_id,),
     )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
     return msg_id
@@ -140,6 +180,16 @@ def update_session_model(session_id: str, model_id: str):
         "UPDATE sessions SET model_id = ? WHERE id = ?",
         (model_id, session_id),
     )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -151,6 +201,16 @@ def update_session_title(session_id: str, title: str):
         "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (title, session_id),
     )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -159,6 +219,16 @@ def delete_session(session_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -209,3 +279,22 @@ def get_session_title_preview(session_id: str, max_len: int = 25) -> str:
         preview = row[0].strip().replace("\n", " ")[:max_len]
         return preview if preview else "New Chat"
     return "New Chat"
+
+
+def get_preference(key: str, default: str = "") -> str:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM preferences WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+def set_preference(key: str, value: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO preferences (key, value) VALUES (?, ?)",
+        (key, value)
+    )
+    conn.commit()
+    conn.close()
