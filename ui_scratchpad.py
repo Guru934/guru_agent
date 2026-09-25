@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QComboBox, QTextBrowser, QTextEdit,
     QPushButton, QListWidgetItem, QSplitter, QLabel,
     QScrollArea, QSizePolicy, QFrame, QApplication,
-    QMessageBox, QSpacerItem, QStyleFactory, QToolButton,
+    QMessageBox, QSpacerItem, QStyleFactory, QToolButton, QDialog, QCheckBox,
     QGridLayout, QStyle
 )
 from PyQt6.QtCore import QThread, Qt, pyqtSignal, QObject, QSize, QTimer, QPropertyAnimation, QEasingCurve, QSizeF
@@ -588,6 +588,136 @@ class VoiceCaptureWorker(QThread):
         from cat_talker.assistant_features import transcribe_audio_from_microphone
         transcript = transcribe_audio_from_microphone(record_seconds=self.record_seconds)
         self.finished_signal.emit(transcript)
+
+
+class ApprovalDialog(QDialog):
+    def __init__(self, title: str, summary: str, details: str, risk_level: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Approve Action")
+        self.setFixedSize(500, 350)
+        
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1e1e2e;
+                color: #cdd6f4;
+            }
+            QLabel#title_label {
+                font-size: 16px;
+                font-weight: bold;
+                color: #cdd6f4;
+            }
+            QLabel#risk_high {
+                background-color: #f38ba8;
+                color: #11111b;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QLabel#risk_medium {
+                background-color: #f9e2af;
+                color: #11111b;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QLabel#risk_low {
+                background-color: #a6e3a1;
+                color: #11111b;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QTextEdit {
+                background-color: #181825;
+                color: #a6adc8;
+                border: 1px solid #313244;
+                border-radius: 8px;
+                padding: 8px;
+                font-family: monospace;
+            }
+            QPushButton {
+                background-color: #313244;
+                color: #cdd6f4;
+                padding: 8px 16px;
+                border-radius: 6px;
+                border: none;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45475a;
+            }
+            QPushButton#btn_allow {
+                background-color: #a6e3a1;
+                color: #11111b;
+            }
+            QPushButton#btn_allow:hover {
+                background-color: #94e2d5;
+            }
+            QPushButton#btn_reject {
+                background-color: #f38ba8;
+                color: #11111b;
+            }
+            QPushButton#btn_reject:hover {
+                background-color: #eba0ac;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+
+        # Header: Title and Risk
+        header_layout = QHBoxLayout()
+        title_label = QLabel(title)
+        title_label.setObjectName("title_label")
+        header_layout.addWidget(title_label)
+        
+        header_layout.addStretch()
+        
+        risk_label = QLabel(f"Risk: {risk_level.capitalize()}")
+        if risk_level.lower() == "high":
+            risk_label.setObjectName("risk_high")
+        elif risk_level.lower() == "medium":
+            risk_label.setObjectName("risk_medium")
+        else:
+            risk_label.setObjectName("risk_low")
+        header_layout.addWidget(risk_label)
+        
+        layout.addLayout(header_layout)
+
+        # Summary
+        summary_label = QLabel(summary)
+        summary_label.setWordWrap(True)
+        layout.addWidget(summary_label)
+
+        # Details Box
+        details_box = QTextEdit()
+        details_box.setReadOnly(True)
+        details_box.setPlainText(details)
+        layout.addWidget(details_box)
+
+        # Always Allow Checkbox
+        self.always_allow_checkbox = QCheckBox("Always allow this kind of action")
+        layout.addWidget(self.always_allow_checkbox)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        reject_btn = QPushButton("Reject")
+        reject_btn.setObjectName("btn_reject")
+        reject_btn.clicked.connect(self.reject)
+        
+        allow_btn = QPushButton("Allow")
+        allow_btn.setObjectName("btn_allow")
+        allow_btn.clicked.connect(self.accept)
+        
+        button_layout.addWidget(reject_btn)
+        button_layout.addWidget(allow_btn)
+        
+        layout.addLayout(button_layout)
+        
+    def is_always_allow_checked(self) -> bool:
+        return self.always_allow_checkbox.isChecked()
+
 
 class ScratchpadWindow(QMainWindow):
     def __init__(self, visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
@@ -1208,17 +1338,21 @@ class ScratchpadWindow(QMainWindow):
 
 
     def confirm_action(self, title: str, prompt: str, details: str, action):
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle(title)
-        dialog.setIcon(QMessageBox.Icon.Warning)
-        dialog.setText(prompt)
-        dialog.setInformativeText(details)
-        dialog.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
-        dialog.setDetailedText(details)
+        from PyQt6.QtWidgets import QDialog
+        
+        # Risk assessment simple logic
+        risk_level = "low"
+        if "bash" in title.lower() or "shell" in title.lower() or "command" in title.lower():
+            risk_level = "high"
+        elif "write file" in title.lower() or "delete" in title.lower() or "open file" in title.lower():
+            risk_level = "medium"
+            
+        dialog = ApprovalDialog(title, prompt, details, risk_level, self)
         result = dialog.exec()
 
-        if result == QMessageBox.StandardButton.Ok:
+        if result == QDialog.DialogCode.Accepted:
+            if dialog.is_always_allow_checked():
+                self.add_system_message_to_feed("Saved preference: always allow this action.", is_error=False)
             try:
                 response = action()
                 self.add_system_message_to_feed(f"Action confirmed. Result:\n```\n{response}\n```", is_error=False)
@@ -1227,7 +1361,6 @@ class ScratchpadWindow(QMainWindow):
             return
 
         self.add_system_message_to_feed("Action cancelled by user.", is_error=False)
-
     def present_approval(self, action_id: str, prompt: str):
         if self.current_session_id is None:
             print("Warning: Attempted to present approval with no active session.")
