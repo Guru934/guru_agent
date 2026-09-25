@@ -37,52 +37,60 @@ def build_approval_message(action_name: str, action_description: str, risk_level
 
 def voice_input_status() -> str:
     """Return the current local voice/transcription status."""
+    missing = []
+    if not shutil.which("ffmpeg") and not shutil.which("arecord") and not shutil.which("sox"):
+        missing.append("a microphone capture tool (ffmpeg, arecord, or sox)")
+    if WhisperModel is None:
+        missing.append("the `faster-whisper` Python package")
+        
+    if missing:
+        return f"Voice input is unready. Missing: {', '.join(missing)}."
+
     parts = []
-    if shutil.which("ffmpeg"):
-        parts.append("ffmpeg available")
-    if shutil.which("arecord"):
-        parts.append("arecord available")
-    if shutil.which("sox"):
-        parts.append("sox available")
-    if WhisperModel is not None:
-        parts.append("local Whisper STT ready")
-    if not parts:
-        return "Voice input is not configured yet; install ffmpeg and faster-whisper or connect a local speech backend."
-    return "Voice input is ready locally: " + ", ".join(parts) + "."
+    if shutil.which("ffmpeg"): parts.append("ffmpeg")
+    elif shutil.which("arecord"): parts.append("arecord")
+    elif shutil.which("sox"): parts.append("sox")
+    parts.append("local Whisper STT")
+        
+    return "Voice input is ready locally: " + " + ".join(parts) + "."
 
-
-def _record_audio_to_wav(record_seconds: int = 5, output_path: Optional[str] = None) -> Optional[str]:
-    """Record a short waveform using the best available local tool."""
+def start_continuous_recording(output_path: Optional[str] = None):
     if output_path is None:
         output_path = str(Path(tempfile.gettempdir()) / "assistant_voice_capture.wav")
+        
+    if Path(output_path).exists():
+        try: Path(output_path).unlink()
+        except: pass
 
+    process = None
     if shutil.which("arecord"):
-        cmd = ["arecord", "-D", "default", "-f", "cd", "-t", "wav", "-d", str(record_seconds), output_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode == 0 and Path(output_path).exists():
-            return output_path
+        cmd = ["arecord", "-D", "default", "-f", "cd", "-t", "wav", output_path]
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif shutil.which("ffmpeg"):
+        cmd = ["ffmpeg", "-y", "-f", "alsa", "-i", "default", output_path]
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif shutil.which("sox"):
+        cmd = ["sox", "-d", output_path]
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+    return process, output_path
 
-    if shutil.which("ffmpeg"):
-        cmd = ["ffmpeg", "-y", "-f", "alsa", "-i", "default", "-t", str(record_seconds), output_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode == 0 and Path(output_path).exists():
-            return output_path
-
-    if shutil.which("sox"):
-        cmd = ["sox", "-d", output_path, "trim", "0", str(record_seconds)]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode == 0 and Path(output_path).exists():
-            return output_path
-
+def stop_continuous_recording(process) -> Optional[str]:
+    if process:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
     return None
-
 
 def transcribe_audio_file(audio_path: str) -> str:
     """Transcribe a saved audio file with local Whisper when available."""
     if WhisperModel is None:
-        return "Speech-to-text backend is not available yet. Install faster-whisper and a microphone capture tool to enable live voice input."
-    if not audio_path or not Path(audio_path).exists():
-        return "No valid recording file was captured for transcription."
+        return "Speech-to-text backend is not available. Please install `faster-whisper`."
+    if not audio_path or not Path(audio_path).exists() or Path(audio_path).stat().st_size < 100:
+        return "No valid audio was captured."
 
     try:
         model = WhisperModel("tiny", device="cpu", compute_type="int8")
@@ -90,18 +98,19 @@ def transcribe_audio_file(audio_path: str) -> str:
         text = " ".join(segment.text.strip() for segment in segments if segment.text.strip())
         if text:
             return text
-        return "Voice input captured, but no clear speech was detected in the recording."
+        return "No clear speech detected."
     except Exception as exc:
         return f"Voice transcription failed: {exc}"
 
-
 def transcribe_audio_from_microphone(record_seconds: int = 5) -> str:
-    """Record a short clip and transcribe it with local Whisper when available."""
-    audio_path = _record_audio_to_wav(record_seconds=record_seconds)
-    if not audio_path:
-        return "No microphone capture backend is available right now. Voice input is configured for a local mic and ffmpeg/arecord pipeline."
-    return transcribe_audio_file(audio_path)
-
+    """Legacy single-shot record."""
+    proc, path = start_continuous_recording()
+    if not proc:
+        return "No capture tool found (install ffmpeg, arecord, or sox)."
+    import time
+    time.sleep(record_seconds)
+    stop_continuous_recording(proc)
+    return transcribe_audio_file(path)
 
 def capture_screen_snapshot(monitor: Optional[str] = None) -> str:
     """Capture a screen image using an actual local backend when available."""

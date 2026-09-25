@@ -577,16 +577,16 @@ class ChatWorker(QObject):
 
 
 
-class VoiceCaptureWorker(QThread):
+class TranscriptionWorker(QThread):
     finished_signal = pyqtSignal(str)
 
-    def __init__(self, record_seconds=4):
+    def __init__(self, audio_path: str):
         super().__init__()
-        self.record_seconds = record_seconds
+        self.audio_path = audio_path
 
     def run(self):
-        from cat_talker.assistant_features import transcribe_audio_from_microphone
-        transcript = transcribe_audio_from_microphone(record_seconds=self.record_seconds)
+        from cat_talker.assistant_features import transcribe_audio_file
+        transcript = transcribe_audio_file(self.audio_path)
         self.finished_signal.emit(transcript)
 
 
@@ -1106,13 +1106,22 @@ class ScratchpadWindow(QMainWindow):
     def start_voice_capture(self):
         if self.voice_in_progress:
             return
+        
         self.voice_in_progress = True
         self.voice_cancel_requested = False
         self.set_voice_button_state("recording")
+        
+        from cat_talker.assistant_features import start_continuous_recording
+        self.voice_recording_proc, self.voice_audio_path = start_continuous_recording()
 
-        self.voice_worker = VoiceCaptureWorker(record_seconds=4)
-        self.voice_worker.finished_signal.connect(self.on_voice_worker_finished)
-        self.voice_worker.start()
+        # Fallback if no backend
+        if not self.voice_recording_proc:
+            self.voice_in_progress = False
+            self.set_voice_button_state("idle")
+            self.add_system_message_to_feed("Voice capture failed. Missing `arecord`, `ffmpeg`, or `sox`.", is_error=True)
+            return
+
+        self.voice_start_time = datetime.datetime.now()
 
     def on_voice_worker_finished(self, transcript: str):
         if not self.voice_in_progress:
@@ -1125,29 +1134,43 @@ class ScratchpadWindow(QMainWindow):
             self.voice_cancel_requested = False
             return
 
-        self.set_voice_button_state("processing")
-        QTimer.singleShot(250, lambda: self.set_voice_button_state("idle"))
+        self.set_voice_button_state("idle")
 
         clean_transcript = (transcript or "").strip()
         if clean_transcript:
-            if clean_transcript.lower().startswith(("no microphone", "voice input", "speech-to-text backend", "transcription failed", "no valid recording")):
+            if clean_transcript.lower().startswith(("no microphone", "voice input", "speech-to-text", "transcription failed", "no valid", "no clear")):
                 self.add_system_message_to_feed(f"Voice status: {clean_transcript}", is_error=False)
             else:
                 self.input_box.setPlainText(clean_transcript)
                 self.add_system_message_to_feed(f"Voice capture result: {clean_transcript}", is_error=False)
+                # Auto send to the assistant flow!
+                self.send_message()
         else:
             self.add_system_message_to_feed("Voice capture ended without a transcript.", is_error=False)
 
-    def finish_voice_capture(self, transcript: str = ""):
+    def finish_voice_capture(self, force_cancel: bool = False):
         if not self.voice_in_progress:
             return
 
-        self.voice_cancel_requested = True
-        self.set_voice_button_state("idle")
-        self.voice_in_progress = False
-
-        if self.voice_worker is not None and self.voice_worker.isRunning():
-            self.voice_worker.wait(250)
+        from cat_talker.assistant_features import stop_continuous_recording
+        
+        if hasattr(self, 'voice_recording_proc'):
+            stop_continuous_recording(self.voice_recording_proc)
+        
+        elapsed = (datetime.datetime.now() - getattr(self, 'voice_start_time', datetime.datetime.now())).total_seconds()
+        
+        if force_cancel or elapsed < 0.5:
+            self.voice_cancel_requested = True
+            self.set_voice_button_state("idle")
+            self.voice_in_progress = False
+            self.add_system_message_to_feed("Voice capture cancelled (held too briefly).", is_error=False)
+            return
+            
+        self.set_voice_button_state("processing")
+        
+        self.transcription_worker = TranscriptionWorker(audio_path=self.voice_audio_path)
+        self.transcription_worker.finished_signal.connect(self.on_voice_worker_finished)
+        self.transcription_worker.start()
 
         if transcript and transcript.strip():
             self.on_voice_worker_finished(transcript)
