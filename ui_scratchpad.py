@@ -751,6 +751,8 @@ class ScratchpadWindow(QMainWindow):
         self.current_ai_response_bubble_text_display: Optional[MarkdownTextBrowser] = None
         self.current_ai_response_content: str = ""
         self.voice_in_progress = False
+        self.voice_worker: Optional[QThread] = None
+        self.voice_cancel_requested = False
         self.orchestrator = AgentOrchestrator(default_model="qwen-6gb:latest", safe_mode=(get_preference("safe_mode", "true") == "true"))
 
         self.model_name_map = {
@@ -932,7 +934,7 @@ class ScratchpadWindow(QMainWindow):
                 self.chat_history = messages
                 display_title = sessions[0]["title"]
                 if display_title == "New Chat":
-                    display_title = get_session_title_preview, get_preference, set_preference(self.current_session_id, max_len=24)
+                    display_title = get_session_title_preview(self.current_session_id, max_len=24)
                 self.session_title_label.setText(f"<b>{display_title}</b>")
                 
                 # Render messages
@@ -1013,7 +1015,7 @@ class ScratchpadWindow(QMainWindow):
                 for s in session_list_data:
                     display_title = s["title"]
                     if display_title == "New Chat":
-                        display_title = get_session_title_preview, get_preference, set_preference(s["id"], max_len=24)
+                        display_title = get_session_title_preview(s["id"], max_len=24)
                     
                     item = QListWidgetItem(self.session_list)
                     item.setData(Qt.ItemDataRole.UserRole, s["id"])
@@ -1074,43 +1076,90 @@ class ScratchpadWindow(QMainWindow):
         self.refresh_sidebar() 
 
 
-    def start_voice_capture(self):
-        if self.voice_in_progress:
-            return
-        self.voice_in_progress = True
-        self.voice_btn.setChecked(True)
-        self.voice_btn.setText("🔴 Listen...")
-        self.voice_btn.setToolTip("Recording audio...")
-        self.voice_btn.setStyleSheet("QPushButton { background: #ff5555; color: white; border: none; border-radius: 10px; padding-left: 5px; padding-right: 5px; }")
-        self.input_box.setDisabled(True)
-        self.input_box.setPlaceholderText("Listening...")
-
-        self.voice_worker = VoiceCaptureWorker(record_seconds=4)
-        self.voice_worker.finished_signal.connect(self.finish_voice_capture)
-        self.voice_worker.start()
-
-    def finish_voice_capture(self, transcript: str):
-        if not self.voice_in_progress:
+    def set_voice_button_state(self, state: str):
+        state = state.lower()
+        if state == "recording":
+            self.voice_btn.setChecked(True)
+            self.voice_btn.setText("🔴 Recording")
+            self.voice_btn.setToolTip("Recording audio... release to stop")
+            self.voice_btn.setStyleSheet("QPushButton { background: #ff5555; color: white; border: none; border-radius: 10px; padding-left: 5px; padding-right: 5px; }")
+            self.input_box.setDisabled(True)
+            self.input_box.setPlaceholderText("Listening...")
             return
 
-        self.voice_in_progress = False
+        if state == "processing":
+            self.voice_btn.setChecked(True)
+            self.voice_btn.setText("⏳ Processing")
+            self.voice_btn.setToolTip("Transcribing audio...")
+            self.voice_btn.setStyleSheet("QPushButton { background: #ffb86c; color: #11111b; border: none; border-radius: 10px; padding-left: 5px; padding-right: 5px; }")
+            self.input_box.setDisabled(True)
+            self.input_box.setPlaceholderText("Transcribing...")
+            return
+
         self.voice_btn.setChecked(False)
         self.voice_btn.setText("🎙")
         self.voice_btn.setToolTip("Hold to talk")
         self.voice_btn.setStyleSheet("QPushButton { background: #3b4261; color: white; border: none; border-radius: 10px; }")
-        
         self.input_box.setDisabled(False)
         self.input_box.setPlaceholderText("Type a message or use commands like 'open browser'...")
 
-        if transcript.strip():
-            self.input_box.setPlainText(transcript.strip())
-            self.add_system_message_to_feed(f"Voice capture result: {transcript}", is_error=False)
+    def start_voice_capture(self):
+        if self.voice_in_progress:
+            return
+        self.voice_in_progress = True
+        self.voice_cancel_requested = False
+        self.set_voice_button_state("recording")
+
+        self.voice_worker = VoiceCaptureWorker(record_seconds=4)
+        self.voice_worker.finished_signal.connect(self.on_voice_worker_finished)
+        self.voice_worker.start()
+
+    def on_voice_worker_finished(self, transcript: str):
+        if not self.voice_in_progress:
+            return
+
+        self.voice_in_progress = False
+        if self.voice_cancel_requested:
+            self.set_voice_button_state("idle")
+            self.add_system_message_to_feed("Voice capture cancelled.", is_error=False)
+            self.voice_cancel_requested = False
+            return
+
+        self.set_voice_button_state("processing")
+        QTimer.singleShot(250, lambda: self.set_voice_button_state("idle"))
+
+        clean_transcript = (transcript or "").strip()
+        if clean_transcript:
+            if clean_transcript.lower().startswith(("no microphone", "voice input", "speech-to-text backend", "transcription failed", "no valid recording")):
+                self.add_system_message_to_feed(f"Voice status: {clean_transcript}", is_error=False)
+            else:
+                self.input_box.setPlainText(clean_transcript)
+                self.add_system_message_to_feed(f"Voice capture result: {clean_transcript}", is_error=False)
+        else:
+            self.add_system_message_to_feed("Voice capture ended without a transcript.", is_error=False)
+
+    def finish_voice_capture(self, transcript: str = ""):
+        if not self.voice_in_progress:
+            return
+
+        self.voice_cancel_requested = True
+        self.set_voice_button_state("idle")
+        self.voice_in_progress = False
+
+        if self.voice_worker is not None and self.voice_worker.isRunning():
+            self.voice_worker.wait(250)
+
+        if transcript and transcript.strip():
+            self.on_voice_worker_finished(transcript)
+            return
+
+        self.add_system_message_to_feed("Voice capture cancelled before transcription completed.", is_error=False)
 
     def on_voice_status_clicked(self):
         self.start_voice_capture()
     def on_screen_snapshot_clicked(self):
-        summary = describe_current_screen("Describe the visible screen and note any important content, UI elements, or context.")
-        self.add_system_message_to_feed(f"Screen description:\n{summary}", is_error=False)
+        summary = describe_current_screen()
+        self.add_system_message_to_feed(f"### 🖥️ Full Screen Analysis\n\n{summary}", is_error=False)
 
     def on_active_window_snapshot_clicked(self):
         summary = describe_active_window()
@@ -1160,7 +1209,7 @@ class ScratchpadWindow(QMainWindow):
             "screen description",
         ]
         if any(p in text.lower() for p in screen_phrases):
-            self.add_system_message_to_feed(f"Screen description:\n{describe_current_screen()}", is_error=False)
+            self.add_system_message_to_feed(f"### 🖥️ Full Screen Analysis\n\n{describe_current_screen()}", is_error=False)
             return
 
         if any(p in text.lower() for p in ["active window", "current window", "describe window", "window description", "focused window"]):
@@ -1437,6 +1486,14 @@ class ScratchpadWindow(QMainWindow):
         self.pending_action_id = None
         self.add_system_message_to_feed("Action Rejected by user.", is_error=False)
 
+    def on_safe_mode_changed(self, state):
+        is_safe = self.safe_mode_checkbox.isChecked()
+        set_preference("safe_mode", "true" if is_safe else "false")
+        self.orchestrator.safe_mode = is_safe
+        mode_text = "enabled. I will no longer rewrite files or run shell commands without being explicitly commanded as a local tool." if is_safe else "disabled. I now have agentic write/shell permissions again."
+        self.add_system_message_to_feed(f"Safe Mode {mode_text}", is_error=False)
+
+
 def run_app():
     app = QApplication(sys.argv)
     dummy_emitter = DummyVisualizerEmitter()
@@ -1450,10 +1507,3 @@ def run_app():
 
 if __name__ == '__main__':
     sys.exit(run_app())
-
-    def on_safe_mode_changed(self, state):
-        is_safe = self.safe_mode_checkbox.isChecked()
-        set_preference("safe_mode", "true" if is_safe else "false")
-        self.orchestrator.safe_mode = is_safe
-        mode_text = "enabled. I will no longer rewrite files or run shell commands without being explicitly commanded as a local tool." if is_safe else "disabled. I now have agentic write/shell permissions again."
-        self.add_system_message_to_feed(f"Safe Mode {mode_text}", is_error=False)

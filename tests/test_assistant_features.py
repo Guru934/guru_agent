@@ -1,5 +1,8 @@
 import unittest
 
+from PyQt6.QtWidgets import QApplication
+
+from ui_scratchpad import ScratchpadWindow
 from cat_talker.assistant_features import (
     build_approval_message,
     capture_screen_snapshot,
@@ -12,6 +15,10 @@ from cat_talker.assistant_features import (
 
 
 class AssistantFeaturesTests(unittest.TestCase):
+    def setUp(self):
+        from cat_talker.db import init_db
+        init_db()
+
     def test_build_approval_message_includes_action_and_risk(self):
         msg = build_approval_message(
             "open_website",
@@ -51,6 +58,23 @@ class AssistantFeaturesTests(unittest.TestCase):
         result = describe_active_window("Describe the active application window and any key elements.")
         self.assertIsInstance(result, str)
         self.assertTrue(len(result) > 0)
+
+    def test_voice_button_state_machine_updates_readably(self):
+        app = QApplication.instance() or QApplication([])
+        window = ScratchpadWindow()
+        window.set_voice_button_state("recording")
+        self.assertEqual(window.voice_btn.text(), "🔴 Recording")
+        self.assertTrue(window.voice_btn.isChecked())
+
+        window.set_voice_button_state("processing")
+        self.assertIn("Processing", window.voice_btn.text())
+
+        window.set_voice_button_state("idle")
+        self.assertEqual(window.voice_btn.text(), "🎙")
+        self.assertFalse(window.voice_btn.isChecked())
+
+        window.close()
+        app.processEvents()
 
 
 if __name__ == "__main__":

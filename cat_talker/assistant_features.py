@@ -212,16 +212,30 @@ def _extract_text_from_response(response) -> str:
 
 
 def analyze_screen_image(image_path: str, question: str = "Describe the visible screen and note important UI elements or content.") -> str:
-    """Use Gemini to analyze a captured image when a valid API key is available."""
+    """Use Gemini to analyze a captured image when a valid API key is available, fallback to local OCR."""
     if not image_path or not Path(image_path).exists():
         return "No valid image file was provided for screen analysis."
+        
+    def _local_ocr_fallback():
+        import subprocess
+        import shutil
+        if shutil.which("tesseract"):
+            try:
+                res = subprocess.run(["tesseract", image_path, "stdout"], capture_output=True, text=True, check=False)
+                ocr_text = res.stdout.strip()
+                if ocr_text:
+                    return f"**[Local OCR Fallback - No Vision Model Available]**\n\nExtracted text from screen:\n```\n{ocr_text}\n```"
+                return "[Local OCR Fallback] Failed to extract any valid text from the image."
+            except Exception as e:
+                return f"[Local OCR Fallback Error]: {e}"
+        return "Gemini image analysis is unavailable, and local 'tesseract' is not installed for OCR."
 
     if genai is None or genai_types is None:
-        return "Gemini image analysis is unavailable because the google-genai package is not installed."
+        return _local_ocr_fallback()
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        return "Gemini image analysis is unavailable because GEMINI_API_KEY is missing."
+        return _local_ocr_fallback()
 
     try:
         client = genai.Client(api_key=api_key)
@@ -233,15 +247,16 @@ def analyze_screen_image(image_path: str, question: str = "Describe the visible 
                 question,
             ],
         )
-        text = _extract_text_from_response(response)
-        if text.strip():
-            return text.strip()
+        t = _extract_text_from_response(response)
+        if t.strip():
+            return t.strip()
         return "Gemini processed the image, but it returned no readable description."
     except Exception as exc:
-        return f"Screen analysis failed: {exc}"
+        print(f"Gemini API failed during vision task, falling back to local OCR: {exc}")
+        return _local_ocr_fallback()
 
 
-def describe_current_screen(question: str = "Describe the visible screen and note key interface elements, text, and context.") -> str:
+def describe_current_screen(question: str = "Analyze the full desktop screen. Provide a high-level overview of open applications, desktop layout, visible menus, and any active notifications. Use Markdown headers for organization.") -> str:
     """Capture and describe the current desktop screen using the local capture path and Gemini analysis when available."""
     snapshot = capture_screen_snapshot("primary")
     if not snapshot or not snapshot.startswith("/"):
