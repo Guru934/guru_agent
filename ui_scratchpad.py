@@ -1082,8 +1082,6 @@ class ScratchpadWindow(QMainWindow):
 
         selected_model_display_name = self.model_dropdown.currentText()
         selected_model_id = self.reverse_model_name_map.get(selected_model_display_name, selected_model_display_name or "qwen-6gb:latest")
-        if plan.preferred_model:
-            selected_model_id = plan.preferred_model
 
         self.chat_worker = ChatWorker(
             selected_model_id,
