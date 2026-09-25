@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: cat-talker
+Version: 0.1.0
+Summary: A real-time voice and vision AI agent using Gemini Multimodal Live API
+Requires-Python: >=3.10
+Requires-Dist: google-genai>=1.33.0
+Requires-Dist: pyaudio>=0.2.14
+Requires-Dist: mss>=9.0.2
+Requires-Dist: opencv-python>=4.11.0.86
+Requires-Dist: PyQt6>=6.8.1

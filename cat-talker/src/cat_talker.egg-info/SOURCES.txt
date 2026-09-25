@@ -1,0 +1,6 @@
+pyproject.toml
+src/cat_talker.egg-info/PKG-INFO
+src/cat_talker.egg-info/SOURCES.txt
+src/cat_talker.egg-info/dependency_links.txt
+src/cat_talker.egg-info/requires.txt
+src/cat_talker.egg-info/top_level.txt

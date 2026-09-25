@@ -1,0 +1,8 @@
+# Local environment
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# Local runtime state
+~/.local/share/cat-talker/
