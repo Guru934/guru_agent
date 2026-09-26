@@ -467,8 +467,8 @@ class DummyVisualizerEmitter(QObject):
 
     def __init__(self):
         super().__init__()
-        self.state_signal.connect(lambda s: print(f"Visualizer State: {s}"))
-        self.glow_signal.connect(lambda s: print(f"Visualizer Glow: {s}"))
+        
+        
 
 
 class ErrorBox(QFrame):
@@ -494,7 +494,7 @@ class ErrorBox(QFrame):
             QFrame#error_box QToolButton {{
                 background-color: {COLORS['red']}; 
                 border: none; 
-                color: {COLORS['error_fg']}}};
+                color: {COLORS['error_fg']};
             }}
             QFrame#error_box QToolButton::hover {{ background-color: {COLORS['pink']}; }}
         """)
@@ -753,10 +753,41 @@ class ScratchpadWindow(QMainWindow):
         self.voice_in_progress = False
         self.voice_worker: Optional[QThread] = None
         self.voice_cancel_requested = False
-        self.orchestrator = AgentOrchestrator(default_model="qwen-6gb:latest", safe_mode=(get_preference("safe_mode", "true") == "true"))
+
+        self._setup_unix_signals()
+        
+        # Start Gemini Live
+        try:
+            from cat_talker.gemini_live_agent import GeminiDesktopAgent
+            import threading, asyncio
+            self.live_agent = GeminiDesktopAgent()
+            
+            from PyQt6.QtCore import QObject, pyqtSignal
+            class AgentSignaler(QObject):
+                msg_sig = pyqtSignal(str, bool)
+            
+            self.agent_signaler = AgentSignaler()
+            self.agent_signaler.msg_sig.connect(self.add_system_message_to_feed)
+
+            def text_cb(role, t):
+                self.agent_signaler.msg_sig.emit(f"[{role}] {t}", False)
+            
+            def start_agent():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.live_agent.run_loop(text_callback=text_cb))
+                
+            threading.Thread(target=start_agent, daemon=True).start()
+        except Exception as e:
+            print(f"Could not start Live Agent: {e}")
+            self.live_agent = None
+
+        self.orchestrator = AgentOrchestrator(default_model="gemini-3.1-flash-lite", safe_mode=(get_preference("safe_mode", "true") == "true"))
 
         self.model_name_map = {
             "gemini-3.1-flash-live-preview": "Gemini Live (Cloud)",
+            "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite (Heavy)",
+            "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite (Heavy)",
             "qwen-6gb:latest": "Qwen 2.5 (Local)",
             "llama3": "Llama 3 (Local)",
             "phi3": "Phi-3 (Local)",
@@ -811,6 +842,10 @@ class ScratchpadWindow(QMainWindow):
         self.session_title_label.setStyleSheet("color: #c0caf5; font-size: 14px;")
         top_bar_layout.addWidget(self.session_title_label)
         
+        self.heavy_agent_status_label = QLabel("● Heavy Agent: Idle")
+        self.heavy_agent_status_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
+        top_bar_layout.addWidget(self.heavy_agent_status_label)
+        
         top_bar_layout.addStretch()
         
         self.model_dropdown = QComboBox()
@@ -842,7 +877,45 @@ class ScratchpadWindow(QMainWindow):
         self.chat_feed_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
          
         self.chat_feed_scroll_area.setWidget(self.chat_feed_content_widget)
-        chat_layout.addWidget(self.chat_feed_scroll_area, stretch=1)
+        
+        # QSplitter to allow resizing the terminal drawer
+        from ui_scratchpad import MarkdownTextBrowser  # if needed, it's already there
+        
+        self.chat_splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # Move scroll area into splitter
+        self.chat_splitter.addWidget(self.chat_feed_scroll_area)
+        
+        # Terminal Drawer
+        self.terminal_drawer = QWidget()
+        self.terminal_drawer.setMinimumHeight(40)
+        self.terminal_drawer.setStyleSheet("background-color: #1e1e2e; border-top: 1px solid #313244;")
+        terminal_layout = QVBoxLayout(self.terminal_drawer)
+        terminal_layout.setContentsMargins(0, 0, 0, 0)
+        terminal_layout.setSpacing(0)
+        
+        self.terminal_toggle_btn = QPushButton("▼ Heavy Agent Logs")
+        self.terminal_toggle_btn.setStyleSheet("text-align: left; padding: 5px; background: #313244; color: #cdd6f4; border: none;")
+        self.terminal_toggle_btn.clicked.connect(self.toggle_terminal_drawer)
+        terminal_layout.addWidget(self.terminal_toggle_btn)
+        
+        self.terminal_text_area = MarkdownTextBrowser()
+        self.terminal_text_area.setStyleSheet("background-color: #11111b; color: #a6adc8; padding: 5px; font-family: monospace;")
+        self.terminal_text_area.hide()
+        terminal_layout.addWidget(self.terminal_text_area)
+        
+        self.chat_splitter.addWidget(self.terminal_drawer)
+        self.chat_splitter.setSizes([800, 40]) # Default closed size
+        
+        chat_layout.addWidget(self.chat_splitter, stretch=1)
+        
+        # Polling timer for heavy agent logs
+        from PyQt6.QtCore import QTimer
+        self.heavy_agent_log_timer = QTimer(self)
+        self.heavy_agent_log_timer.timeout.connect(self.poll_heavy_agent_logs)
+        self.heavy_agent_log_timer.start(500)
+        self.last_log_size = 0
+
         
         # Input Bar
         input_bar_widget = QFrame()
@@ -980,6 +1053,13 @@ class ScratchpadWindow(QMainWindow):
     def on_model_changed(self, model_display_name):
         raw_model_id = self.reverse_model_name_map.get(model_display_name, model_display_name)
         set_preference("default_model", raw_model_id)
+        import os
+        os.environ["HEAVY_AGENT_MODEL"] = raw_model_id
+        
+        # If it's a live API model, let's also update the live agent and reconnect if needed later
+        if hasattr(self, 'live_agent') and self.live_agent:
+            if "live" in raw_model_id and self.live_agent.current_model != raw_model_id:
+                self.live_agent.switch_model(raw_model_id)
 
     def refresh_sidebar(self):
 
@@ -1103,8 +1183,16 @@ class ScratchpadWindow(QMainWindow):
         self.input_box.setDisabled(False)
         self.input_box.setPlaceholderText("Type a message or use commands like 'open browser'...")
 
+
     def start_voice_capture(self):
+        if hasattr(self, 'live_agent') and self.live_agent:
+            self.live_agent.is_recording = True
+            self.set_voice_button_state("recording")
+            self.voice_in_progress = True
+            return
+            
         if self.voice_in_progress:
+
             return
         
         self.voice_in_progress = True
@@ -1148,35 +1236,44 @@ class ScratchpadWindow(QMainWindow):
         else:
             self.add_system_message_to_feed("Voice capture ended without a transcript.", is_error=False)
 
+
     def finish_voice_capture(self, force_cancel: bool = False):
+        if hasattr(self, 'live_agent') and self.live_agent:
+            self.live_agent.is_recording = False
+            self.set_voice_button_state("idle")
+            self.voice_in_progress = False
+            return
+            
         if not self.voice_in_progress:
+
             return
 
         from cat_talker.assistant_features import stop_continuous_recording
-        
+
         if hasattr(self, 'voice_recording_proc'):
             stop_continuous_recording(self.voice_recording_proc)
-        
-        elapsed = (datetime.datetime.now() - getattr(self, 'voice_start_time', datetime.datetime.now())).total_seconds()
-        
+
+        start_time = getattr(self, 'voice_start_time', datetime.datetime.now())
+        elapsed = (datetime.datetime.now() - start_time).total_seconds()
+
         if force_cancel or elapsed < 0.5:
             self.voice_cancel_requested = True
-            self.set_voice_button_state("idle")
             self.voice_in_progress = False
+            self.set_voice_button_state("idle")
             self.add_system_message_to_feed("Voice capture cancelled (held too briefly).", is_error=False)
             return
-            
-        self.set_voice_button_state("processing")
-        
-        self.transcription_worker = TranscriptionWorker(audio_path=self.voice_audio_path)
-        self.transcription_worker.finished_signal.connect(self.on_voice_worker_finished)
-        self.transcription_worker.start()
 
-        if transcript and transcript.strip():
-            self.on_voice_worker_finished(transcript)
+        self.set_voice_button_state("processing")
+        self.voice_in_progress = False
+
+        audio_path = getattr(self, 'voice_audio_path', None)
+        if not audio_path:
+            self.add_system_message_to_feed("Voice capture failed: no audio file was generated.", is_error=True)
             return
 
-        self.add_system_message_to_feed("Voice capture cancelled before transcription completed.", is_error=False)
+        self.transcription_worker = TranscriptionWorker(audio_path=audio_path)
+        self.transcription_worker.finished_signal.connect(self.on_voice_worker_finished)
+        self.transcription_worker.start()
 
     def on_voice_status_clicked(self):
         self.start_voice_capture()
@@ -1232,16 +1329,29 @@ class ScratchpadWindow(QMainWindow):
             "screen description",
         ]
         if any(p in text.lower() for p in screen_phrases):
-            self.add_system_message_to_feed(f"### 🖥️ Full Screen Analysis\n\n{describe_current_screen()}", is_error=False)
-            return
+            ctx = f"### 🖥️ Full Screen Analysis\n\n{describe_current_screen()}"
+            self.add_system_message_to_feed(ctx, is_error=False)
+            # Do NOT return. Let the AI process it.
+            if "route_context" not in locals() and "route_context" not in globals():
+                route_context = ctx
+            else:
+                route_context += f"\n\n{ctx}"
+
 
         if any(p in text.lower() for p in ["active window", "current window", "describe window", "window description", "focused window"]):
-            self.add_system_message_to_feed(f"### 🪟 Active Window Content\n\n{describe_active_window()}", is_error=False)
-            return
+            ctx = f"### 🪟 Active Window Content\n\n{describe_active_window()}"
+            self.add_system_message_to_feed(ctx, is_error=False)
+            # Do NOT return. Let the AI process it.
+            if "route_context" not in locals() and "route_context" not in globals():
+                route_context = ctx
+            else:
+                route_context += f"\n\n{ctx}"
+
 
         if text.lower() in ["screenshot", "snapshot", "screen capture", "capture screen"]:
-            self.on_screen_snapshot_clicked()
-            return
+            ctx = f"### 🖥️ Screen Analysis\n\n{describe_current_screen()}"
+            self.add_system_message_to_feed(ctx, is_error=False)
+            # Do NOT return.
 
         if text.lower().startswith("transcribe ") or "listen" in text.lower():
             self.add_system_message_to_feed(f"Voice capture result: {transcribe_audio_from_microphone(record_seconds=4)}", is_error=False)
@@ -1517,7 +1627,126 @@ class ScratchpadWindow(QMainWindow):
         self.add_system_message_to_feed(f"Safe Mode {mode_text}", is_error=False)
 
 
+
+    def _setup_unix_signals(self):
+        import signal
+        from PyQt6.QtCore import QTimer, QMetaObject, Qt, pyqtSlot
+        
+        self._signal_timer = QTimer(self)
+        self._signal_timer.timeout.connect(lambda: None)
+        self._signal_timer.start(100)
+        
+        def sigusr1_handler(signum, frame):
+            QTimer.singleShot(0, self.start_voice_capture)
+            
+        def sigusr2_handler(signum, frame):
+            QTimer.singleShot(0, self.finish_voice_capture_sig)
+            
+        def sigrtmin_handler(signum, frame):
+            QTimer.singleShot(0, self.toggle_window_visibility)
+
+        try:
+            signal.signal(signal.SIGUSR1, sigusr1_handler)
+            signal.signal(signal.SIGUSR2, sigusr2_handler)
+            
+            if hasattr(signal, 'SIGRTMIN'):
+                signal.signal(signal.SIGRTMIN, sigrtmin_handler)
+            else:
+                signal.signal(signal.SIGWINCH, sigrtmin_handler)
+        except Exception as e:
+            print(f"Could not bind UNIX signals: {e}")
+
+    from PyQt6.QtCore import pyqtSlot
+    @pyqtSlot()
+    def finish_voice_capture_sig(self):
+        self.finish_voice_capture(force_cancel=False)
+
+    @pyqtSlot()
+    def toggle_window_visibility(self):
+        if self.isVisible():
+            if self.isActiveWindow():
+                self.hide()
+            else:
+                self.show()
+                self.raise_()
+                self.activateWindow()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+
+    def toggle_terminal_drawer(self):
+        if self.terminal_text_area.isVisible():
+            self.terminal_text_area.hide()
+            self.terminal_toggle_btn.setText("▼ Heavy Agent Logs")
+            self.chat_splitter.setSizes([800, 40])
+        else:
+            self.terminal_text_area.show()
+            self.terminal_toggle_btn.setText("▲ Heavy Agent Logs")
+            self.chat_splitter.setSizes([600, 200])
+
+    def poll_heavy_agent_logs(self):
+        import os
+        log_path = "/home/guru/guru_agent/handoff_status.txt"
+        if not os.path.exists(log_path):
+            return
+        try:
+            stat = os.stat(log_path)
+            if stat.st_size > self.last_log_size:
+                with open(log_path, "r") as f:
+                    f.seek(self.last_log_size)
+                    new_logs = f.read()
+                self.last_log_size = stat.st_size
+                
+                # Append to terminal area
+                current_text = self.terminal_text_area.toPlainText()
+                if "[Heavy Agent]" in new_logs and not self.terminal_text_area.isVisible():
+                    self.toggle_terminal_drawer() # pop it open!
+                    
+                if "429 RESOURCE_EXHAUSTED" in new_logs or "Error during execution:" in new_logs:
+                    self.add_system_message_to_feed("Heavy Agent failed due to API Quota / Error. Check terminal drawer.", is_error=True)
+
+
+                self.terminal_text_area.setPlainText(current_text + new_logs)
+                self.terminal_text_area.verticalScrollBar().setValue(self.terminal_text_area.verticalScrollBar().maximum())
+                
+                # Status indicator parsing
+                lines = new_logs.strip().split('\n')
+                for line in reversed(lines):
+                    if "[STATUS]" in line:
+                        status = line.split("[STATUS]")[-1].strip()
+                        self.heavy_agent_status_label.setText(f"● Heavy Agent: {status}")
+                        if "Working" in status:
+                            self.heavy_agent_status_label.setStyleSheet("color: #f9e2af; font-weight: bold;")
+                        elif "Done" in status:
+                            self.heavy_agent_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+                        elif "Idle" in status:
+                            self.heavy_agent_status_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
+                        elif "Error" in status:
+                            self.heavy_agent_status_label.setStyleSheet("color: #f38ba8; font-weight: bold;")
+                        break
+                        
+                # Alert chat UI if finished
+                if "[DONE]" in new_logs:
+                    # Let the AI know to speak or add a system message
+                    self.add_system_message_to_feed("Handoff Task Completed by Heavy Agent.", is_error=False)
+                    if hasattr(self, 'live_agent') and self.live_agent:
+                        # Feed input to Gemini synthetic queue
+                        import asyncio
+                        try:
+                            # We can signal gemini that the task is complete so it announces it
+                            self.live_agent.loop.call_soon_threadsafe(
+                                self.live_agent.synthetic_input_queue.put_nowait, 
+                                "HEAVY_AGENT_DONE"
+                            )
+                        except Exception as e:
+                            pass
+        except Exception as e:
+            pass
+
 def run_app():
+
     app = QApplication(sys.argv)
     dummy_emitter = DummyVisualizerEmitter()
     w = ScratchpadWindow(
