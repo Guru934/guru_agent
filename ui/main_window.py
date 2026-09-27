@@ -39,6 +39,9 @@ from agent.planner import AgentOrchestrator
 from agent.assistant_bridge import AssistantBridge
 from agent.assistant_events import AssistantEvent
 
+# Toggle file for F1/F3 keybind integration
+TOGGLE_FILE = "/tmp/guru_agent_toggle"
+
 
 # --- Constants & Style (Dracula theme colors) --
 # https://draculatheme.com/contribute
@@ -347,7 +350,7 @@ class ScratchpadWindow(QMainWindow):
         self.voice_worker: Optional[QThread] = None
         self.voice_cancel_requested = False
 
-        self._setup_unix_signals()
+        self._setup_toggle_watcher()
         
         self.agent_listener = GlobalAgentListener()
         self.agent_listener.event_signal.connect(self.on_agent_event)
@@ -1074,33 +1077,39 @@ class ScratchpadWindow(QMainWindow):
 
 
 
-    def _setup_unix_signals(self):
-        import signal
-        from PyQt6.QtCore import QTimer, QMetaObject, Qt, pyqtSlot
+    def _setup_toggle_watcher(self):
+        """Set up file watcher for F1/F3 keybind toggle."""
+        from PyQt6.QtCore import QFileSystemWatcher
         
-        self._signal_timer = QTimer(self)
-        self._signal_timer.timeout.connect(lambda: None)
-        self._signal_timer.start(100)
-        
-        def sigusr1_handler(signum, frame):
-            QTimer.singleShot(0, self.start_voice_capture)
-            
-        def sigusr2_handler(signum, frame):
-            QTimer.singleShot(0, self.finish_voice_capture_sig)
-            
-        def sigrtmin_handler(signum, frame):
-            QTimer.singleShot(0, self.toggle_window_visibility)
-
+        # Create toggle file if it doesn't exist
         try:
-            signal.signal(signal.SIGUSR1, sigusr1_handler)
-            signal.signal(signal.SIGUSR2, sigusr2_handler)
-            
-            if hasattr(signal, 'SIGRTMIN'):
-                signal.signal(signal.SIGRTMIN, sigrtmin_handler)
-            else:
-                signal.signal(signal.SIGWINCH, sigrtmin_handler)
+            with open(TOGGLE_FILE, 'w') as f:
+                f.write("0")
+        except Exception:
+            pass
+        
+        self._toggle_watcher = QFileSystemWatcher([TOGGLE_FILE], self)
+        self._toggle_watcher.fileChanged.connect(self._on_toggle_file_changed)
+        self._last_toggle_time = 0
+        print(f"[Toggle] Watching {TOGGLE_FILE} for visibility toggle requests", flush=True)
+
+    def _on_toggle_file_changed(self, path: str):
+        """Handle toggle file change - toggle window visibility."""
+        import time
+        current_time = time.time()
+        # Debounce: ignore changes within 500ms
+        if current_time - self._last_toggle_time < 0.5:
+            return
+        self._last_toggle_time = current_time
+        
+        try:
+            with open(path, 'r') as f:
+                content = f.read().strip()
+            # Toggle on any content change
+            print(f"[Toggle] File changed, toggling visibility", flush=True)
+            self.toggle_window_visibility()
         except Exception as e:
-            print(f"Could not bind UNIX signals: {e}")
+            print(f"[Toggle] Error reading toggle file: {e}", flush=True)
 
     from PyQt6.QtCore import pyqtSlot
 
