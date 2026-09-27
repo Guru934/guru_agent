@@ -79,10 +79,14 @@ def resolve_fast_action(text: str):
         if value is not None:
             return FastAction("set_brightness", {"level_percent": value})
 
-    # Play a specific thing on YouTube.
-    play_match = re.match(r"^(?:play|put on)\s+(.+?)(?:\s+on\s+youtube)?$", normalized)
-    if play_match and "youtube" in normalized:
-        query = play_match.group(1).strip()
+    # Play/search-and-play a specific thing on YouTube.
+    youtube_play_prefix = re.match(
+        r"^(?:search\s+and\s+play|play|put\s+on)\s+(.+)$",
+        normalized,
+    )
+    if youtube_play_prefix and "youtube" in normalized:
+        query = youtube_play_prefix.group(1).strip()
+        query = re.sub(r"\s+(?:on\s+)?youtube(?:\s+on\s+youtube)?$", "", query).strip()
         query = re.sub(r"\s+on\s+youtube$", "", query).strip()
         if query:
             return FastAction("search_and_play_youtube", {"query": query})
