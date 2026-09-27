@@ -9,3 +9,5 @@ websockets>=13.0
 mss>=10.0.0
 opencv-python>=4.11.0.0
 PyAudio>=0.2.14
+
+python-dotenv>=1.0.0
