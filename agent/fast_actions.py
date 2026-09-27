@@ -79,6 +79,18 @@ def resolve_fast_action(text: str):
         if value is not None:
             return FastAction("set_brightness", {"level_percent": value})
 
+    # Composite YouTube commands, e.g. "open YouTube and play Kalyani".
+    composite_youtube = re.match(
+        r"^(?:open|visit|go to|navigate to)\s+youtube\s+and\s+(?:search\s+and\s+play|play|put\s+on)\s+(.+)$",
+        normalized,
+    )
+    if composite_youtube:
+        query = composite_youtube.group(1).strip()
+        if len(query) >= 2 and query[0] == query[-1] and query[0] in {"'", '"'}:
+            query = query[1:-1].strip()
+        if query:
+            return FastAction("search_and_play_youtube", {"query": query})
+
     # Play/search-and-play a specific thing on YouTube.
     youtube_play_prefix = re.match(
         r"^(?:search\s+and\s+play|play|put\s+on)\s+(.+)$",
