@@ -24,7 +24,6 @@ from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.formatters import HtmlFormatter
 from pygments.styles import get_style_by_name 
 
-from agent.tool_registry import read_file, ripgrep_search, execute_bash, write_file, approve_action, reject_action, SCRATCHPAD_PENDING_ACTIONS
 from tools.browser import (
     analyze_screen_image,
     build_approval_message,

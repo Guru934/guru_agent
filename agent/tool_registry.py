@@ -1,58 +1,90 @@
-import json
-import os
-import subprocess
-from pathlib import Path
-from typing import Any, Dict
+from typing import Dict, Any, Callable, Optional
+from dataclasses import dataclass
+from tools.shell import execute_bash_command, ripgrep_search_impl
+from tools.filesystem import read_file, write_file_content
 
-SCRATCHPAD_PENDING_ACTIONS: Dict[str, Dict[str, Any]] = {}
+@dataclass
+class ToolSpec:
+    name: str
+    description: str
+    input_schema: dict
+    risk: str
+    handler: Callable
+    
+class Registry:
+    def __init__(self):
+        self._tools: Dict[str, ToolSpec] = {}
 
+    def register(self, spec: ToolSpec):
+        self._tools[spec.name] = spec
+        
+    def get_tool(self, name: str) -> Optional[Callable]:
+        spec = self._tools.get(name)
+        if spec:
+            return spec.handler
+        return None
+        
+    def get_spec(self, name: str) -> Optional[ToolSpec]:
+        return self._tools.get(name)
+        
+    def get_all_specs(self):
+        return list(self._tools.values())
 
-def read_file(path: str) -> str:
-    from tools.filesystem import read_file
-    return read_file(path)
+registry = Registry()
 
+registry.register(ToolSpec(
+    name="execute_shell",
+    description="Executes a bash/terminal command and returns output.",
+    input_schema={
+        "type": "OBJECT",
+        "properties": {
+            "command": {"type": "STRING"}
+        },
+        "required": ["command"]
+    },
+    risk="high",
+    handler=lambda command: execute_bash_command(command)
+))
 
-def ripgrep_search(query: str) -> str:
-    from tools.shell import ripgrep_search_impl
-    return ripgrep_search_impl(query)
+registry.register(ToolSpec(
+    name="write_file",
+    description="Writes content to a specific file path.",
+    input_schema={
+        "type": "OBJECT",
+        "properties": {
+            "path": {"type": "STRING"},
+            "content": {"type": "STRING"}
+        },
+        "required": ["path", "content"]
+    },
+    risk="medium",
+    handler=lambda path, content: write_file_content(path, content)
+))
 
+registry.register(ToolSpec(
+    name="read_file",
+    description="Reads the contents of a file.",
+    input_schema={
+        "type": "OBJECT",
+        "properties": {
+            "path": {"type": "STRING"}
+        },
+        "required": ["path"]
+    },
+    risk="low",
+    handler=lambda path: read_file(path)
+))
 
-def execute_bash(action_id: str, command: str) -> str:
-    SCRATCHPAD_PENDING_ACTIONS[action_id] = {
-        "kind": "bash",
-        "command": command,
-        "status": "pending",
-    }
-    return f"Run this command?\n```bash\n{command}\n```"
-
-
-def write_file(action_id: str, path: str, content: str) -> str:
-    SCRATCHPAD_PENDING_ACTIONS[action_id] = {
-        "kind": "write",
-        "path": path,
-        "content": content,
-        "status": "pending",
-    }
-    return f"Write file: {path}?\n\nContent preview:\n```\n{content[:300]}\n```"
-
-
-def approve_action(action_id: str):
-    action = SCRATCHPAD_PENDING_ACTIONS.pop(action_id, None)
-    if action is None:
-        raise KeyError(f"Action {action_id} not found.")
-
-    kind = action["kind"]
-    if kind == "bash":
-        from tools.shell import execute_bash_command
-        return execute_bash_command(action["command"])
-
-    if kind == "write":
-        from tools.filesystem import write_file_content
-        return write_file_content(action["path"], action["content"])
-
-    raise ValueError(f"Unsupported action kind: {kind}")
-
-
-def reject_action(action_id: str):
-    SCRATCHPAD_PENDING_ACTIONS.pop(action_id, None)
-    return True
+registry.register(ToolSpec(
+    name="search",
+    description="Search files linearly for a query string.",
+    input_schema={
+        "type": "OBJECT",
+        "properties": {
+            "query": {"type": "STRING"}
+        },
+        "required": ["query"]
+    },
+    risk="low",
+    handler=lambda query: ripgrep_search_impl(query)
+))

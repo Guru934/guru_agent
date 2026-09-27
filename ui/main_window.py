@@ -24,7 +24,6 @@ from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.formatters import HtmlFormatter
 from pygments.styles import get_style_by_name 
 
-from agent.tool_registry import read_file, ripgrep_search, execute_bash, write_file, approve_action, reject_action, SCRATCHPAD_PENDING_ACTIONS
 from tools.browser import (
     analyze_screen_image,
     build_approval_message,
@@ -37,7 +36,7 @@ from tools.browser import (
 from memory.sqlite import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
 from tools.desktop import handle_desktop_action
 from providers import get_installed_models, chat_completion_stream
-from ui.widgets import AutoResizingTextEdit, MarkdownTextBrowser, SessionRowWidget, DummyVisualizerEmitter
+from ui.widgets import AutoResizingTextEdit, MarkdownTextBrowser, SessionRowWidget, DummyVisualizerEmitter, MessageBubble
 from ui.chat_view import ChatWorker, TranscriptionWorker
 from ui.approval_dialog import ApprovalDialog
 from agent.planner import AgentOrchestrator
@@ -289,6 +288,19 @@ QPushButton#send_btn:hover {{
 
 
 
+
+from agent.events import bus, AgentEvent
+
+class GlobalAgentListener(QObject):
+    event_signal = pyqtSignal(AgentEvent)
+
+    def __init__(self):
+        super().__init__()
+        bus.subscribe(self.handle_event)
+        
+    def handle_event(self, event: AgentEvent):
+        self.event_signal.emit(event)
+
 class ScratchpadWindow(QMainWindow):
     def __init__(self, visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
         super().__init__()
@@ -326,31 +338,17 @@ class ScratchpadWindow(QMainWindow):
 
         self._setup_unix_signals()
         
-        # Start Gemini Live
-        try:
-            from providers.gemini_live import GeminiDesktopAgent
-            import threading, asyncio
-            self.live_agent = GeminiDesktopAgent()
-            
-            from PyQt6.QtCore import QObject, pyqtSignal
-            class AgentSignaler(QObject):
-                msg_sig = pyqtSignal(str, bool)
-            
-            self.agent_signaler = AgentSignaler()
-            self.agent_signaler.msg_sig.connect(self.add_system_message_to_feed)
+        self.agent_listener = GlobalAgentListener()
+        self.agent_listener.event_signal.connect(self.on_agent_event)
+        
+        self.current_task_bubble = None
+        self.current_task_steps = []
 
-            def text_cb(role, t):
-                self.agent_signaler.msg_sig.emit(f"[{role}] {t}", False)
-            
-            def start_agent():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self.live_agent.run_loop(text_callback=text_cb))
-                
-            threading.Thread(target=start_agent, daemon=True).start()
-        except Exception as e:
-            print(f"Could not start Live Agent: {e}")
-            self.live_agent = None
+
+        
+        # Standalone GeminiLive background auto-connection was removed in Phase 5.
+        # Primary pipeline is Microphone UI toggle -> Transcription -> Standard AgentRuntime.
+        self.live_agent = None
 
         self.orchestrator = AgentOrchestrator(default_model="gemini-3.1-flash-lite", safe_mode=(get_preference("safe_mode", "true") == "true"))
 
@@ -480,9 +478,6 @@ class ScratchpadWindow(QMainWindow):
         
         # Polling timer for heavy agent logs
         from PyQt6.QtCore import QTimer
-        self.heavy_agent_log_timer = QTimer(self)
-        self.heavy_agent_log_timer.timeout.connect(self.poll_heavy_agent_logs)
-        self.heavy_agent_log_timer.start(500)
         self.last_log_size = 0
 
         
@@ -862,26 +857,6 @@ class ScratchpadWindow(QMainWindow):
         plan = self.orchestrator.decide(text)
         route_context = self.orchestrator.build_context_instruction(plan)
 
-        if self.pending_action_id:
-            action_id = self.pending_action_id
-            self.pending_action_id = None
-            self.input_box.clear()
-
-            response_bubble = MessageBubble("user", text)
-            self.chat_feed_layout.addWidget(response_bubble)
-            QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
-
-            if text.lower() in ['y', 'yes']:
-                try:
-                    res = approve_action(action_id)
-                    system_msg = f"Action Executed. Result:\n```\n{res}\n```"
-                    self.add_system_message_to_feed(system_msg, is_error=False)
-                except Exception as e:
-                    self.on_error_occurred("Tool Execution Error", f"Failed to execute approved action: {e}")
-            else:
-                reject_action(action_id)
-                self.add_system_message_to_feed("Action Rejected by user.", is_error=False)
-            return
 
         if text.lower() in ["voice", "voice status", "microphone", "check voice"]:
             self.add_system_message_to_feed(voice_input_status(), is_error=False)
@@ -1153,41 +1128,6 @@ class ScratchpadWindow(QMainWindow):
 
         self.add_system_message_to_feed("Action cancelled by user.", is_error=False)
 
-    def present_approval(self, action_id: str, prompt: str):
-        if self.current_session_id is None:
-            print("Warning: Attempted to present approval with no active session.")
-            return
-
-        approval_msg = f"Approval Needed:\n{prompt}"
-        approval_bubble = MessageBubble("system", approval_msg, is_error=False)
-        self.chat_feed_layout.addWidget(approval_bubble)
-        QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
-
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle("Approve action")
-        dialog.setIcon(QMessageBox.Icon.Warning)
-        dialog.setText("Review this action before it runs")
-        dialog.setInformativeText(prompt)
-        dialog.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
-
-        result = dialog.exec()
-        self.pending_action_id = action_id
-
-        if result == QMessageBox.StandardButton.Ok:
-            try:
-                res = approve_action(action_id)
-                self.pending_action_id = None
-                self.add_system_message_to_feed(f"Action Executed. Result:\n```\n{res}\n```", is_error=False)
-            except Exception as e:
-                self.pending_action_id = None
-                self.on_error_occurred("Tool Execution Error", f"Failed to execute approved action: {e}")
-            return
-
-        reject_action(action_id)
-        self.pending_action_id = None
-        self.add_system_message_to_feed("Action Rejected by user.", is_error=False)
-
     def on_safe_mode_changed(self, state):
         is_safe = self.safe_mode_checkbox.isChecked()
         set_preference("safe_mode", "true" if is_safe else "false")
@@ -1226,91 +1166,123 @@ class ScratchpadWindow(QMainWindow):
             print(f"Could not bind UNIX signals: {e}")
 
     from PyQt6.QtCore import pyqtSlot
+
+    @pyqtSlot(AgentEvent)
+    def on_agent_event(self, event: AgentEvent):
+        # Update status bar
+        if event.type == "LOG":
+            msg = event.payload.get("msg", "")
+            self.heavy_agent_status_label.setText(f"Status: {msg}")
+            
+        elif event.type == "TASK_STARTED":
+            desc = event.payload.get("description", "Unknown Task")
+            self.heavy_agent_status_label.setText("Status: Executing Task...")
+            self.current_task_steps = []
+            
+            # Create a dedicated layout widget for the Task Panel
+            from ui.chat_view import MessageBubble
+            self.current_task_bubble = MessageBubble("system", f"<b>Task:</b> {desc}<br><ul></ul>", is_error=False)
+            self.chat_feed_layout.addWidget(self.current_task_bubble)
+            QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
+
+        elif event.type in ["TOOL_REQUESTED", "TOOL_FINISHED", "APPROVAL_REQUIRED", "APPROVAL_GRANTED", "APPROVAL_REJECTED"]:
+            tool_name = event.payload.get("tool_name", "")
+            
+            if event.type == "TOOL_REQUESTED":
+                self.current_task_steps.append({"name": tool_name, "status": "running"})
+                self.heavy_agent_status_label.setText(f"Status: Tool Requested -> {tool_name}")
+                
+            elif event.type == "TOOL_FINISHED":
+                status = event.payload.get("status", "unknown")
+                for step in reversed(self.current_task_steps):
+                    if step["name"] == tool_name and step["status"] in ["running", "pending_approval"]:
+                        step["status"] = "success" if status == "success" else "error"
+                        break
+                        
+            elif event.type == "APPROVAL_REQUIRED":
+                for step in reversed(self.current_task_steps):
+                    if step["name"] == tool_name and step["status"] == "running":
+                        step["status"] = "pending_approval"
+                        break
+                        
+            elif event.type == "APPROVAL_GRANTED":
+                for step in reversed(self.current_task_steps):
+                    if step["status"] == "pending_approval":
+                        step["status"] = "running"
+                        break
+                        
+            elif event.type == "APPROVAL_REJECTED":
+                for step in reversed(self.current_task_steps):
+                    if step["status"] == "pending_approval":
+                        step["status"] = "error"
+                        break
+            
+            # Redraw the task bubble
+            if self.current_task_bubble:
+                html = "<b>Task Progress:</b><br><ul style='list-style-type: none; padding-left: 10px;'>"
+                for step in self.current_task_steps:
+                    icon = "⏳"
+                    if step["status"] == "success": icon = "✅"
+                    elif step["status"] == "error": icon = "❌"
+                    elif step["status"] == "pending_approval": icon = "⚠️"
+                    html += f"<li>{icon} {step['name']}</li>"
+                html += "</ul>"
+                self.current_task_bubble.text_browser.setHtml(html)
+
+        if event.type == "APPROVAL_REQUIRED":
+            approval_id = event.payload.get("approval_id")
+            tool_name = event.payload.get("tool_name")
+            reason = event.payload.get("reason", "")
+            risk_level = event.payload.get("risk_level", "medium")
+            arguments = event.payload.get("arguments", {})
+            self.heavy_agent_status_label.setText(f"Status: Waiting for Approval ({tool_name})")
+            
+            from ui.approval_dialog import ApprovalDialog
+            details = repr(arguments)
+            dlg = ApprovalDialog(f"Approval Required: {tool_name}", reason, details, risk_level, parent=self)
+            if dlg.exec():
+                from agent.approvals import manager
+                try:
+                    res = manager.approve(approval_id)
+                except Exception as e:
+                    self.add_system_message_to_feed(f"Failed to execute approved action: {e}", is_error=True)
+            else:
+                from agent.approvals import manager
+                try:
+                    manager.reject(approval_id)
+                except:
+                    pass
+
+        elif event.type == "TASK_COMPLETED":
+            self.heavy_agent_status_label.setText("Status: Task Completed")
+            res = event.payload.get("result", "")
+            if res:
+                self.add_system_message_to_feed(res, is_error=False)
+            self.current_task_bubble = None
+
+        elif event.type == "TASK_FAILED":
+            err = event.payload.get("error", "Unknown error")
+            self.heavy_agent_status_label.setText(f"Status: Task Failed")
+            self.add_system_message_to_feed(f"Task Failed: {err}", is_error=True)
+            self.current_task_bubble = None
+
+
+            err = event.payload.get("error", "Unknown error")
+            self.heavy_agent_status_label.setText(f"Status: Task Failed")
+            self.add_system_message_to_feed(f"Task Failed: {err}", is_error=True)
+
     @pyqtSlot()
     def finish_voice_capture_sig(self):
         self.finish_voice_capture(force_cancel=False)
 
-    @pyqtSlot()
     def toggle_window_visibility(self):
         if self.isVisible():
-            if self.isActiveWindow():
-                self.hide()
-            else:
-                self.show()
-                self.raise_()
-                self.activateWindow()
+            self.hide()
         else:
             self.show()
-            self.raise_()
             self.activateWindow()
 
-
     def toggle_terminal_drawer(self):
-        if self.terminal_text_area.isVisible():
-            self.terminal_text_area.hide()
-            self.terminal_toggle_btn.setText("▼ Heavy Agent Logs")
-            self.chat_splitter.setSizes([800, 40])
-        else:
-            self.terminal_text_area.show()
-            self.terminal_toggle_btn.setText("▲ Heavy Agent Logs")
-            self.chat_splitter.setSizes([600, 200])
-
-    def poll_heavy_agent_logs(self):
-        import os
-        from config import HANDOFF_STATUS_FILE
-        log_path = str(HANDOFF_STATUS_FILE)
-        if not os.path.exists(log_path):
-            return
-        try:
-            stat = os.stat(log_path)
-            if stat.st_size > self.last_log_size:
-                with open(log_path, "r") as f:
-                    f.seek(self.last_log_size)
-                    new_logs = f.read()
-                self.last_log_size = stat.st_size
-                
-                # Append to terminal area
-                current_text = self.terminal_text_area.toPlainText()
-                if "[Heavy Agent]" in new_logs and not self.terminal_text_area.isVisible():
-                    self.toggle_terminal_drawer() # pop it open!
-                    
-                if "429 RESOURCE_EXHAUSTED" in new_logs or "Error during execution:" in new_logs:
-                    self.add_system_message_to_feed("Heavy Agent failed due to API Quota / Error. Check terminal drawer.", is_error=True)
-
-
-                self.terminal_text_area.setPlainText(current_text + new_logs)
-                self.terminal_text_area.verticalScrollBar().setValue(self.terminal_text_area.verticalScrollBar().maximum())
-                
-                # Status indicator parsing
-                lines = new_logs.strip().split('\n')
-                for line in reversed(lines):
-                    if "[STATUS]" in line:
-                        status = line.split("[STATUS]")[-1].strip()
-                        self.heavy_agent_status_label.setText(f"● Heavy Agent: {status}")
-                        if "Working" in status:
-                            self.heavy_agent_status_label.setStyleSheet("color: #f9e2af; font-weight: bold;")
-                        elif "Done" in status:
-                            self.heavy_agent_status_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
-                        elif "Idle" in status:
-                            self.heavy_agent_status_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
-                        elif "Error" in status:
-                            self.heavy_agent_status_label.setStyleSheet("color: #f38ba8; font-weight: bold;")
-                        break
-                        
-                # Alert chat UI if finished
-                if "[DONE]" in new_logs:
-                    # Let the AI know to speak or add a system message
-                    self.add_system_message_to_feed("Handoff Task Completed by Heavy Agent.", is_error=False)
-                    if hasattr(self, 'live_agent') and self.live_agent:
-                        # Feed input to Gemini synthetic queue
-                        import asyncio
-                        try:
-                            # We can signal gemini that the task is complete so it announces it
-                            self.live_agent.loop.call_soon_threadsafe(
-                                self.live_agent.synthetic_input_queue.put_nowait, 
-                                "HEAVY_AGENT_DONE"
-                            )
-                        except Exception as e:
-                            pass
-        except Exception as e:
-            pass
+        visible = not self.terminal_text_area.isVisible()
+        self.terminal_text_area.setVisible(visible)
+        self.terminal_toggle_btn.setText("▼ Heavy Agent Logs" if visible else "▶ Heavy Agent Logs")
