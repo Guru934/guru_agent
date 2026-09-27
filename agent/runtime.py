@@ -7,6 +7,7 @@ from agent.executor import ToolExecutor
 from agent.model_provider import create_agent_session
 from agent.state import TaskState
 from agent.tool_registry import registry
+from agent.fast_actions import resolve_fast_action
 
 
 class AgentRuntime:
@@ -67,13 +68,40 @@ class AgentRuntime:
                 state.completed = True
                 response = None
             else:
-                session = create_agent_session(
-                    self.model_id,
-                    system_instruction,
-                    registry.get_all_specs() if enable_tools else [],
-                    conversation,
-                )
-                response = session.send_message(request)
+                fast_action = resolve_fast_action(request) if enable_tools else None
+                if fast_action is not None:
+                    emit(
+                        "LOG",
+                        task_id,
+                        {"msg": f"Using deterministic fast path: {fast_action.tool_name}"},
+                    )
+                    result = self.executor.execute(
+                        fast_action.tool_name,
+                        fast_action.arguments,
+                        {"task_id": task_id, "cancel_event": cancellation},
+                    )
+                    result_text = str(result.output)
+                    state.add_observation(
+                        fast_action.tool_name,
+                        fast_action.arguments,
+                        result_text,
+                        is_error=result.status not in {"success"},
+                    )
+                    state.step_count = 1
+                    if result.status == "success":
+                        state.final_answer = result_text
+                    else:
+                        state.error = result_text
+                    state.completed = True
+                    response = None
+                else:
+                    session = create_agent_session(
+                        self.model_id,
+                        system_instruction,
+                        registry.get_all_specs() if enable_tools else [],
+                        conversation,
+                    )
+                    response = session.send_message(request)
 
             while not state.completed:
                 if cancellation.is_set():
