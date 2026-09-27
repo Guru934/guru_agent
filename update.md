@@ -1,5 +1,31 @@
 # Update Log
 
+## Phase 6 Fix: Fix Hyprland Fullscreen Binding + Fullscreen Button (Completed - 2026-09-27)
+
+**Problem**: Two fullscreen issues:
+1. Super+F was supposed to toggle fullscreen via Hyprland config (`kbWindowFullscreen = "SUPER + F"`), but the binding wasn't working reliably
+2. The fullscreen button (⛶) in the top bar wasn't working on Wayland - `showFullScreen()` doesn't work properly on Wayland without compositor support
+
+**Fix Applied**:
+1. **`/home/guru/.config/hypr/hyprland/keybinds.lua`** - Added explicit Super+F binding:
+   - Added `create_bind("SUPER + F", hl.dsp.exec_cmd("hyprctl dispatch fullscreen"))`
+   - Directly calls Hyprland's fullscreen dispatcher
+
+2. **`ui/main_window.py`** - Fixed fullscreen button to work on Wayland:
+   - `toggle_fullscreen()` now detects Wayland session
+   - Uses `hyprctl dispatch fullscreen` via subprocess on Wayland
+   - Falls back to Qt's `showFullScreen()` on X11
+   - Button text updates to show current state (⛶)
+
+**Result**: 
+- Super+F now reliably toggles fullscreen via Hyprland
+- Fullscreen button (⛶) works on Wayland by calling compositor
+- Both methods work together seamlessly
+
+**Tests**: All 99 tests pass.
+
+---
+
 ## Phase 5 Fix: Fix Task/Connection/Assistant Status Separation in UI (Completed - 2026-09-27)
 
 **Problem**: The top bar status labels were conflating different states:

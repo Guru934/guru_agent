@@ -662,8 +662,20 @@ class ScratchpadWindow(QMainWindow):
             self.showNormal()
             self.raise_()
             self.activateWindow()
+            self.fullscreen_btn.setText("⛶")
         else:
+            # On Wayland, use compositor fullscreen if available
+            import os
+            if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
+                try:
+                    import subprocess
+                    subprocess.Popen(["hyprctl", "dispatch", "fullscreen"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    self.fullscreen_btn.setText("⛶")
+                    return
+                except Exception:
+                    pass
             self.showFullScreen()
+            self.fullscreen_btn.setText("⛶")
 
     def keyPressEvent(self, event):
         # F11 is a reliable in-app fallback. Super+F also works when Hyprland
