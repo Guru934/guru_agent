@@ -68,14 +68,17 @@ class GeminiAgentSession:
             for item in history
             if item.get("role") in {"user", "assistant"} and item.get("content")
         ]
-        client = genai.Client()
+        # Keep the client alive for the entire chat session.
+        # google-genai owns the underlying HTTP client here; letting this
+        # local variable die can close the transport while chat is still used.
+        self.client = genai.Client()
         config_kwargs = {
             "system_instruction": system_instruction,
             "temperature": 0.0,
         }
         if declarations:
             config_kwargs["tools"] = [types.Tool(function_declarations=declarations)]
-        self.chat = client.chats.create(
+        self.chat = self.client.chats.create(
             model=model_id,
             config=types.GenerateContentConfig(**config_kwargs),
             history=history_contents,
@@ -91,6 +94,10 @@ class GeminiAgentSession:
 
     def send_message(self, message: str) -> AgentResponse:
         return self._normalize(self.chat.send_message(message))
+
+    def close(self):
+        """Release the Gemini client after the runtime has finished using it."""
+        self.client.close()
 
     def send_tool_results(
         self, calls: Sequence[AgentFunctionCall], results: Sequence[str]
@@ -171,6 +178,10 @@ class OllamaAgentSession:
                 "content": result,
             })
         return self._request()
+
+    def close(self):
+        """Ollama uses per-request HTTP connections managed by requests."""
+        return None
 
 
 def create_agent_session(

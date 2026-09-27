@@ -68,6 +68,7 @@ class AgentRuntime:
             part for part in (system_instruction, default_instruction) if part
         )
         conversation = list(history or [])
+        session = None
         try:
             emit("LOG", task_id, {"msg": f"Starting agent runtime for prompt: {request}"})
             if cancellation.is_set():
@@ -103,7 +104,7 @@ class AgentRuntime:
                     response = None
                 else:
                     session = create_agent_session(
-                        self.model_id,
+                        self._execution_model_id(),
                         system_instruction,
                         registry.get_all_specs() if enable_tools else [],
                         conversation,
@@ -155,6 +156,13 @@ class AgentRuntime:
             state.error = f"Agent runtime failed: {error}"
             state.completed = True
         finally:
+            if session is not None:
+                try:
+                    close = getattr(session, "close", None)
+                    if close:
+                        close()
+                except Exception as close_error:
+                    emit("LOG", task_id, {"msg": f"Agent session close error: {close_error}"})
             with self._cancellation_lock:
                 self._cancellation_tokens.pop(task_id, None)
 

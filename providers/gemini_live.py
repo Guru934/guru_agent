@@ -135,10 +135,12 @@ class GeminiDesktopAgent:
         self.client = None  # Deferred to run_loop for proper error handling
         self.audio = None
         self.vision = None
-        self.stop_event = asyncio.Event()
+        # Controlled from both the Live thread and the Qt UI thread.
+        # threading.Event is safe for this cross-thread lifecycle flag.
+        self.stop_event = threading.Event()
         self._is_speaking = False
         self._is_processing = False
-        self.synthetic_input_queue = asyncio.Queue()
+        self.synthetic_input_queue = None
         self.is_recording = False
         self.loop = None
         self.current_model = "gemini-3.8-live"
@@ -196,6 +198,7 @@ class GeminiDesktopAgent:
     async def run_loop(self, volume_callback=None, app_quit_callback=None, text_callback=None,
                        state_callback=None, bubble_callback=None, glow_callback=None):
         self.loop = asyncio.get_running_loop()
+        self.synthetic_input_queue = asyncio.Queue()
         self.audio = AudioInterface()
         self.audio.volume_cb = volume_callback
         
@@ -343,13 +346,13 @@ class GeminiDesktopAgent:
                                     action = await self.synthetic_input_queue.get()
                                     if action == "HEAVY_AGENT_DONE":
                                         async with send_lock:
-                                            try:
-                                                await session.send(input="The heavy agent has just finished its delegated task! Briefly let the user know verbally.")
-                                            except AttributeError:
-                                                req = types.LiveClientContent(
-                                                    turns=[types.Content(role="user", parts=[types.Part(text="The heavy agent has just finished its delegated task! Briefly let the user know verbally.")])]
-                                                )
-                                                await session.send_client_content(req)
+                                            await session.send_client_content(
+                                                turns=types.Content(
+                                                    role="user",
+                                                    parts=[types.Part(text="The heavy agent has just finished its delegated task! Briefly let the user know verbally.")],
+                                                ),
+                                                turn_complete=True,
+                                            )
                                     elif action == "ACTIVE_WINDOW":
                                         region = self.vision.get_active_window_region()
                                         frame = self.vision.capture_frame(region=region)
@@ -360,14 +363,13 @@ class GeminiDesktopAgent:
                                                 # Send the image
                                                 await session.send_realtime_input(video=types.Blob(data=frame, mime_type='image/jpeg'))
                                                 # Send text prompt
-                                                try:
-                                                    await session.send(input="The user just pressed the active window hotkey. Look at the provided image. What do you see? Or ask the user how you can help with it.")
-                                                except AttributeError:
-                                                    # Fallback if send doesn't accept input= kwarg
-                                                    req = types.LiveClientContent(
-                                                        turns=[types.Content(role="user", parts=[types.Part(text="The user just pressed the active window hotkey. Look at the provided image. What do you see?")])]
-                                                    )
-                                                    await session.send_client_content(req)
+                                                await session.send_client_content(
+                                                    turns=types.Content(
+                                                        role="user",
+                                                        parts=[types.Part(text="The user just pressed the active window hotkey. Look at the provided image. What do you see? Or ask the user how you can help with it.")],
+                                                    ),
+                                                    turn_complete=True,
+                                                )
                                 except Exception as e:
                                     logger.error(f"Synthetic input worker error: {e}", exc_info=True)
 
@@ -654,14 +656,14 @@ class GeminiDesktopAgent:
         )
 
     async def _inject_system_message(self, session, message: str):
-        """Inject a system message into an active session."""
-        try:
-            await session.send(input=message)
-        except AttributeError:
-            req = types.LiveClientContent(
-                turns=[types.Content(role="user", parts=[types.Part(text=message)])]
-            )
-            await session.send_client_content(req)
+        """Inject a non-realtime text turn into an active Live session."""
+        await session.send_client_content(
+            turns=types.Content(
+                role="user",
+                parts=[types.Part(text=message)],
+            ),
+            turn_complete=True,
+        )
 
     async def _inject_system_message_to_session(self, message: str):
         """Inject system message to current session - called from event loop."""
