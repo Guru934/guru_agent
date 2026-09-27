@@ -156,7 +156,7 @@ class AgentRuntime:
             state.error = f"Agent runtime failed: {error}"
             state.completed = True
         finally:
-<<<<<<< HEAD
+            # Close the agent session to release client resources
             if session is not None:
                 try:
                     close = getattr(session, "close", None)
@@ -164,14 +164,6 @@ class AgentRuntime:
                         close()
                 except Exception as close_error:
                     emit("LOG", task_id, {"msg": f"Agent session close error: {close_error}"})
-=======
-            # Close the agent session to release client resources
-            if 'session' in locals() and session:
-                try:
-                    session.close()
-                except Exception:
-                    pass
->>>>>>> d67eaab (Fix critical issues from code review)
             with self._cancellation_lock:
                 self._cancellation_tokens.pop(task_id, None)
 

@@ -189,14 +189,8 @@ class OllamaAgentSession:
         return self._request()
 
     def close(self):
-<<<<<<< HEAD
         """Ollama uses per-request HTTP connections managed by requests."""
-        return None
-=======
-        """No-op for Ollama - no persistent client to close."""
         pass
->>>>>>> d67eaab (Fix critical issues from code review)
-
 
 def create_agent_session(
     model_id: str,

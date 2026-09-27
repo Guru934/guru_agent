@@ -135,13 +135,9 @@ class GeminiDesktopAgent:
         self.client = None  # Deferred to run_loop for proper error handling
         self.audio = None
         self.vision = None
-<<<<<<< HEAD
         # Controlled from both the Live thread and the Qt UI thread.
         # threading.Event is safe for this cross-thread lifecycle flag.
         self.stop_event = threading.Event()
-=======
-        self.stop_event = threading.Event()  # Use threading.Event for cross-thread safety
->>>>>>> d67eaab (Fix critical issues from code review)
         self._is_speaking = False
         self._is_processing = False
         self.synthetic_input_queue = None
