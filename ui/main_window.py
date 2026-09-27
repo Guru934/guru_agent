@@ -1463,7 +1463,7 @@ class ScratchpadWindow(QMainWindow):
     def _on_live_glow(self, state: str):
         """Handle glow state from Gemini Live - sync with visualizer."""
         if self.visualizer_glow_emitter:
-            self.visualizer_glow_emitter.glow_changed.emit(state)
+            self.visualizer_glow_emitter.emit(state)
         # Also update assistant state from glow
         glow_to_state = {
             "connected": "idle",
