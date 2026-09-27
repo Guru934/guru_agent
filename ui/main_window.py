@@ -1202,6 +1202,7 @@ class ScratchpadWindow(QMainWindow):
         task_id = event.task_id
         if event.type == "TASK_STARTED":
             desc = event.payload.get("description", "Unknown Task")
+            # Heavy agent is now executing a task
             self.heavy_agent_status_label.setText("Status: Executing Task...")
             bubble = MessageBubble("system", "", is_error=False)
             self.task_panels[task_id] = {
@@ -1304,7 +1305,6 @@ class ScratchpadWindow(QMainWindow):
             except (KeyError, ValueError) as error:
                 self.add_system_message_to_feed(f"Approval request could not be resolved: {error}", is_error=True)
         elif event.type == "TASK_COMPLETED":
-            self.heavy_agent_status_label.setText("Status: Task Completed")
             if panel:
                 panel["status"] = "completed"
                 self._render_task_panel(task_id)
@@ -1312,9 +1312,11 @@ class ScratchpadWindow(QMainWindow):
             self._active_task_count = max(0, self._active_task_count - 1)
             self._update_workspace_visibility()
             self._append_to_workspace("[Task Completed]")
+            # Update heavy agent status: Idle if no more tasks, else still executing
+            if self._active_task_count == 0:
+                self.heavy_agent_status_label.setText("Status: Idle")
         elif event.type == "TASK_FAILED":
             err = event.payload.get("error", "Unknown error")
-            self.heavy_agent_status_label.setText("Status: Task Failed")
             if panel:
                 panel["status"] = "failed"
                 panel["error"] = err
@@ -1323,6 +1325,9 @@ class ScratchpadWindow(QMainWindow):
             self._active_task_count = max(0, self._active_task_count - 1)
             self._update_workspace_visibility()
             self._append_to_workspace(f"[Task Failed] {err}")
+            # Update heavy agent status: Idle if no more tasks, else still executing
+            if self._active_task_count == 0:
+                self.heavy_agent_status_label.setText("Status: Idle")
 
     def _render_task_panel(self, task_id: str):
         panel = self.task_panels.get(task_id)

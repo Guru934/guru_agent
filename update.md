@@ -1,5 +1,33 @@
 # Update Log
 
+## Phase 5 Fix: Fix Task/Connection/Assistant Status Separation in UI (Completed - 2026-09-27)
+
+**Problem**: The top bar status labels were conflating different states:
+- `heavy_agent_status_label` showed "Status: Task Completed" or "Status: Task Failed" - overriding the heavy agent's actual state
+- Connection state, assistant state, and task state were not independent
+- User couldn't tell if the assistant was connected, thinking, or speaking when a task failed
+
+**Fix Applied**:
+1. **`ui/main_window.py`** - Separated status concerns:
+   - `heavy_agent_status_label` now only shows heavy agent state: "Idle", "Executing Task...", "Waiting for Approval"
+   - `voice_connection_label` unchanged - shows connection state (Connected, Connecting, Disconnected)
+   - `assistant_state_label` unchanged - shows assistant state (Idle, Listening, Thinking, Speaking)
+   - Task status shown in task panels (already implemented)
+
+2. **Updated event handlers**:
+   - `TASK_STARTED`: Heavy agent shows "Executing Task..."
+   - `TASK_COMPLETED`/`TASK_FAILED`: Heavy agent returns to "Idle" ONLY when no more active tasks (`_active_task_count == 0`)
+   - Task completion/failure shown in task panels and workspace, NOT in top bar
+
+**Result**: Three independent status channels:
+- 🔴/🟢 Connection: Disconnected/Connecting/Connected
+- 🎙️ Assistant: Idle/Listening/Thinking/Speaking  
+- ⚙ Heavy Agent: Idle/Executing/Waiting for Approval
+
+**Tests**: All 99 tests pass.
+
+---
+
 ## Phase 4 Fix: Build Temporary Agent Terminal for Execution Tasks (Completed - 2026-09-27)
 
 **Problem**: The Agent Workspace was just a log viewer (MarkdownTextBrowser). For actual execution tasks (coding, scripts, tests, git operations), a real terminal was needed that can:
