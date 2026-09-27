@@ -346,14 +346,13 @@ class GeminiDesktopAgent:
                                     action = await self.synthetic_input_queue.get()
                                     if action == "HEAVY_AGENT_DONE":
                                         async with send_lock:
-                                            try:
-                                                await session.send_client_content(
-                                                    turns=types.Content(
-                                                        role="user",
-                                                        parts=[types.Part(text="The heavy agent has just finished its delegated task! Briefly let the user know verbally.")],
-                                                    ),
-                                                    turn_complete=True,
-                                                )
+                                            await session.send_client_content(
+                                                turns=types.Content(
+                                                    role="user",
+                                                    parts=[types.Part(text="The heavy agent has just finished its delegated task! Briefly let the user know verbally.")],
+                                                ),
+                                                turn_complete=True,
+                                            )
                                     elif action == "ACTIVE_WINDOW":
                                         region = self.vision.get_active_window_region()
                                         frame = self.vision.capture_frame(region=region)
