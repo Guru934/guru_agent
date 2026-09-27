@@ -256,13 +256,14 @@ class GeminiDesktopAgent:
                         # Send context to Gemini Live
                         if self.assistant_bridge:
                             if is_reconnect:
-                                # On reconnect: send full resumption context
+                                # On reconnect: send full resumption context to the model (not to chat UI)
                                 context = self.assistant_bridge.get_context_for_resumption()
                                 import json
                                 context_str = json.dumps(context, indent=2, default=str)
                                 await self._inject_system_message(session, f"SESSION RECOVERED:\n{context_str}")
-                                if text_callback:
-                                    text_callback("system", "Session recovered. Active tasks and approvals restored.")
+                                # Only update connection state - don't flood chat with recovery messages
+                                if state_callback:
+                                    state_callback("reconnected")
                             else:
                                 # First connection: send session context
                                 context = self.assistant_bridge.get_session_context()

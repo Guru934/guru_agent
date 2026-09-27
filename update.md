@@ -1,5 +1,35 @@
 # Update Log
 
+## Phase 1 Fix: Reconnect/Session Recovery Flooding (Completed - 2026-09-27)
+
+**Problem**: Every Gemini Live reconnection sent "Session recovered. Active tasks and approvals restored." to the chat UI, flooding conversation history.
+
+**Root Cause**: In `providers/gemini_live.py:263-265`, reconnection logic called:
+```python
+await self._inject_system_message(session, f"SESSION RECOVERED:\n{context_str}")
+text_callback("system", "Session recovered. Active tasks and approvals restored.")
+```
+
+The context injection to the model is correct (so it knows session state), but the `text_callback` flooded the chat.
+
+**Fix Applied**:
+1. **`providers/gemini_live.py`** - Removed chat message on reconnect, only send context to model:
+   - Removed `text_callback("system", "Session recovered...")` 
+   - Added `state_callback("reconnected")` for UI status indicator
+
+2. **`ui/main_window.py`** - Added "reconnected" state handling:
+   - Added "reconnected" to `_update_connection_state()` with 🟢 Reconnected display
+   - Auto-transitions to "connected" after 2 seconds
+   - Added "reconnected" to `_on_live_state()` state_map for assistant indicator
+
+**Result**: Reconnection now shows brief status indicator (🟢 Reconnected → 🟢 Connected) without chat pollution. Model still receives full context for continuity.
+
+**Tests**: All 99 tests pass.
+
+---
+
+# Update Log
+
 ## Current Phase Status
 
 **Phases 1–6 are implemented foundations with hardening and integration in progress. They are not complete. Phase 7 is deferred until the criteria below are met; Phase 8 has not started.**

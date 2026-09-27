@@ -1451,11 +1451,16 @@ class ScratchpadWindow(QMainWindow):
             "connecting": ("🟡 Connecting...", "#ffb86c"),
             "connected": ("🟢 Connected", "#50fa7b"),
             "reconnecting": ("🔄 Reconnecting...", "#ffb86c"),
+            "reconnected": ("🟢 Reconnected", "#50fa7b"),
             "error": ("🔴 Error", "#ff5555"),
         }
         text, color = state_colors.get(state, (state, "#c0caf5"))
         self.voice_connection_label.setText(text)
         self.voice_connection_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 5px;")
+        
+        # Auto-transition from "reconnected" to "connected" after a short delay
+        if state == "reconnected":
+            QTimer.singleShot(2000, lambda: self._update_connection_state("connected") if self.voice_connection_label.text() == "🟢 Reconnected" else None)
 
     @pyqtSlot(AssistantEvent)
     def _on_assistant_event(self, event: AssistantEvent):
@@ -1503,6 +1508,7 @@ class ScratchpadWindow(QMainWindow):
             "connecting": ("🔄 Connecting...", "#ffb86c"),
             "reconnecting": ("🔄 Reconnecting...", "#ffb86c"),
             "connected": ("🎙️ Ready", "#50fa7b"),
+            "reconnected": ("🎙️ Ready", "#50fa7b"),
             "disconnected": ("🔴 Disconnected", "#ff5555"),
             "error": ("🔴 Error", "#ff5555"),
         }
