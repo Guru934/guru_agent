@@ -1,4 +1,3 @@
-import os
 import threading
 import uuid
 from typing import Dict, List, Optional, Any, Callable
@@ -11,7 +10,6 @@ from agent.approvals import manager as approval_manager
 from agent.capabilities import registry as capability_registry
 from agent.capabilities import CapabilityGrant
 from agent.assistant_events import AssistantEvent
-from memory.sqlite import get_preference
 
 
 class TaskSummary:
@@ -213,18 +211,9 @@ class AssistantBridge:
         
         def run_task():
             try:
+                # Use the provided model_id (from Gemini Live) - AgentRuntime will
+                # map live models to the configured heavy execution model via _execution_model_id()
                 selected_model = model_id or "gemini-2.5-flash"
-                if "live" in selected_model.lower():
-                    # Voice delegation starts from the Live model, but the
-                    # execution agent must use the configured normal model.
-                    configured = get_preference("default_model", "")
-                    if configured and "live" not in configured.lower():
-                        selected_model = configured
-                    else:
-                        selected_model = os.getenv(
-                            "HEAVY_AGENT_MODEL",
-                            "gemini-3.1-flash-lite",
-                        )
                 runtime = AgentRuntime(model_id=selected_model)
                 runtime.run(
                     request=description,

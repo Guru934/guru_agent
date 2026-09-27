@@ -455,6 +455,12 @@ class ScratchpadWindow(QMainWindow):
         self.session_title_label.setStyleSheet("color: #c0caf5; font-size: 14px;")
         top_bar_layout.addWidget(self.session_title_label)
         
+        # Model boundary display: Conversation (Live) → Execution (Heavy)
+        self.model_boundary_label = QLabel()
+        self._update_model_boundary_display()
+        self.model_boundary_label.setStyleSheet("color: #8be9fd; font-weight: bold; font-size: 11px;")
+        top_bar_layout.addWidget(self.model_boundary_label)
+        
         self.heavy_agent_status_label = QLabel("● Heavy Agent: Idle")
         self.heavy_agent_status_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
         top_bar_layout.addWidget(self.heavy_agent_status_label)
@@ -744,6 +750,21 @@ class ScratchpadWindow(QMainWindow):
         if hasattr(self, 'live_agent') and self.live_agent:
             if "live" in raw_model_id and self.live_agent.current_model != raw_model_id:
                 self.live_agent.switch_model(raw_model_id)
+        
+        self._update_model_boundary_display()
+
+    def _update_model_boundary_display(self):
+        """Update the model boundary display showing Conversation → Execution models."""
+        import os
+        # Conversation model (Gemini Live)
+        conv_model = "gemini-3.8-live"  # Fixed for now
+        conv_display = self.model_name_map.get(conv_model, conv_model)
+        
+        # Execution model (Heavy Agent)
+        exec_model = os.getenv("HEAVY_AGENT_MODEL", "gemini-3.1-flash-lite")
+        exec_display = self.model_name_map.get(exec_model, exec_model)
+        
+        self.model_boundary_label.setText(f"💬 {conv_display} → ⚙ {exec_display}")
 
     def refresh_sidebar(self):
 

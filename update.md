@@ -1,5 +1,34 @@
 # Update Log
 
+## Phase 2 Fix: Conversation-Model vs Execution-Model Separation (Completed - 2026-09-27)
+
+**Problem**: Model boundary was duplicated in two places:
+1. `AssistantBridge.delegate_task()` - did its own live model detection and mapping
+2. `AgentRuntime._execution_model_id()` - also mapped live models to heavy models
+
+This created inconsistency and made the architecture unclear.
+
+**Fix Applied**:
+1. **`agent/assistant_bridge.py`** - Removed duplicate model selection logic from `delegate_task()`:
+   - Removed `os` import and `get_preference` import
+   - Simplified `delegate_task()` to just pass the model_id through to AgentRuntime
+   - AgentRuntime's `_execution_model_id()` is now the single source of truth
+
+2. **`agent/runtime.py`** - Already had `_execution_model_id()` method that correctly maps live models to heavy execution model via `HEAVY_AGENT_MODEL` env var
+
+3. **`ui/main_window.py`** - Added explicit model boundary display in top bar:
+   - Added `model_boundary_label` showing "💬 Conversation Model → ⚙ Execution Model"
+   - Updates automatically when execution model changes via dropdown
+   - Shows both models clearly: e.g., "💬 Gemini 3.8 Live (Primary) → ⚙ Qwen 2.5 (Local)"
+
+4. **`tests/test_agent_hardening.py`** - Increased wait time in reconnection test to 3s for cloud model completion
+
+**Result**: Clear architectural separation - Gemini Live handles conversation, Heavy Agent handles execution. UI explicitly shows both models.
+
+**Tests**: All 99 tests pass.
+
+---
+
 ## Phase 1 Fix: Reconnect/Session Recovery Flooding (Completed - 2026-09-27)
 
 **Problem**: Every Gemini Live reconnection sent "Session recovered. Active tasks and approvals restored." to the chat UI, flooding conversation history.

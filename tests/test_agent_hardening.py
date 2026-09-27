@@ -1377,7 +1377,7 @@ class Phase10RecoveryTests(unittest.TestCase):
         """Agent completion available after Live reconnect."""
         task_id = self.bridge.delegate_task("Quick task")
         import time
-        time.sleep(1.0)  # Let it complete
+        time.sleep(3.0)  # Let it complete
         
         # Get context for resumption (simulates reconnect)
         context = self.bridge.get_context_for_resumption()
