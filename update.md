@@ -1,47 +1,46 @@
-# Update Log - Project Stabilization Progress
+# Update Log
 
-## Completed Phases
+## Current Phase Status
 
-### **Phase 1: Unified Tool Execution (COMPLETED)**
-- Deployed strict `EventBus` replacing the brittle text-file polling mechanism.
-- Created `agent/executor.py` forcing all code through transactional evaluation.
-- Added `ApprovalDialog` mapping via event signals natively inside `ui/main_window.py`.
+**Phases 1–6 are implemented foundations with hardening and integration in progress. They are not complete. Phase 7 is deferred until the criteria below are met; Phase 8 has not started.**
 
-### **Phase 2: True Agent Runtime (COMPLETED)**
-- Replaced the hardcoded naive script looping with `AgentRuntime` in `agent/runtime.py`.
-- Enforces an actual ReAct (`Thought -> Plan -> Act -> Observe`) step loop with automatic max steps limits and native exception fallback handling.
-- Execution steps are synchronously paused inside a background thread (via `threading.Event()`) while pending user approval so the LLM doesn't blindly hallucinate during the wait cycle.
+### Phase 1 — Unified Tool Execution
 
-### **Phase 3: Structured Tool Calls (COMPLETED)**
-- Dismantled all `<bash>` XML string tags completely. 
-- Mapped all `ToolSpecs` to strictly generate Gemini `FunctionDeclaration` JSON schemas dynamically preventing parameter drifting. 
+- Agent-issued tools are validated and evaluated by the shared `ToolExecutor` before handlers run.
+- Approval waits are bounded and cancellable. Approved work executes on the agent worker rather than blocking the UI thread.
+- Legacy XML tool parsing and the separate normal-chat provider worker have been removed.
 
-### **Phase 4: Workspace & Security Model (COMPLETED)**
-- Defined strict `WORKSPACE_ROOTS` bounds inside `config.py` preventing any `read_file` or `write_file` outside defined local domains.
-- Embedded a tiered shell evaluation process inside `agent/policy.py`:
-  - `BLOCKED`: Immediately denies `rm -rf`, `shutdown`, `chown`
-  - `SAFE`: Silently permits diagnostic read-only scans `ls`, `pwd`, `git diff`
-  - `APPROVAL`: Flags unknown mutative commands `npm install`, `pip install` for manual execution review. 
-- Generated a strictly formatted offline `security_audit.log` payload to record every OS interaction attempt.
+### Phase 2 — Agent Runtime
 
-### **Phase 5: Unified Voice Model (COMPLETED)**
-- Gutted the standalone `GeminiLive` auto-connection routine on startup.
-- Mapped the primary application pipeline to flow: `Microphone UI toggle -> Transcription -> Standard AgentRuntime`.
+- Keyboard and transcribed voice messages use `AgentRuntime`.
+- Gemini and Ollama conversations use provider adapters behind the runtime.
+- Cancellation state is tied to task lifetime and released on completion.
 
-### **Phase 6: Live Observability (COMPLETED)**
-- Generated dynamic Task Panel reporting natively injected into the main PyQt Window feed.
-- Tasks sequentially output checkmarks `✅`, loading spinners `⏳`, error crosses `❌`, and prompt warnings `⚠️` directly linked to backend `EventBus` payloads for high transparency debugging.
+### Phase 3 — Structured Tool Calls
 
----
+- Tool definitions use provider-independent JSON schemas.
+- Arguments are type-checked, required fields enforced, and undeclared fields rejected before policy evaluation.
 
-## Remaining Work (Future Phases)
+### Phase 4 — Workspace and Security
 
-### **Phase 7: Evaluation Test Suite**
-- Build an isolated deterministic harness with ~50 static boundary conditions validating:
-  - Agent Sandbox Escapes
-  - Task execution halting on cancellation signals
-  - LLM Token and latency tracking
-  - Approval bypass attempt failures
+- File tools resolve paths against configured workspace roots and reject paths outside them.
+- Shell allowlisting uses parsed commands rather than string-prefix matching. Commands outside the read-only allowlist require approval while safe mode is on; disabling safe mode explicitly allows non-blocked commands. Execution uses a fixed working directory, filtered environment, timeout, and output limit.
+- **Approval is not an OS sandbox. Non-allowlisted shell commands permitted with safe mode off, or approved while safe mode is on, are not guaranteed to be filesystem-confined. Do not treat this as safe for unattended execution; stronger OS-level isolation remains future work.**
 
-### **Phase 8: Advanced Plugin Infrastructure**
-- Re-activate auxiliary functionalities dynamically (Calendar, Web Browsers, RAG Memory integration) as discrete tool handlers now that the application foundation is inherently stabilized.
+### Phase 5 — Unified Voice
+
+- Voice transcription feeds the same text submission/runtime path as keyboard input.
+- Realtime provider code remains separate and must not execute privileged tools directly.
+
+### Phase 6 — Observability
+
+- Task panels and tool progress are keyed by task ID, so concurrent tasks do not share step state.
+- Approval results and task completion/failure remain visible in the UI.
+
+## Phase 7 Entry Criteria
+
+Start the evaluation phase only after Phases 1–6 have been reviewed against the current application paths, relevant targeted tests pass, and CI is green. The existing core regression tests are validation for the implemented architecture, not a declaration that Phase 7 is complete.
+
+## Phase 8
+
+Plugin infrastructure has not started.

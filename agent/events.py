@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Callable
 import datetime
 import uuid
+import threading
 
 @dataclass
 class AgentEvent:
@@ -17,12 +18,22 @@ class AgentEvent:
 class EventBus:
     def __init__(self):
         self._subscribers = []
+        self._lock = threading.RLock()
 
     def subscribe(self, callback: Callable[[AgentEvent], None]):
-        self._subscribers.append(callback)
+        with self._lock:
+            if callback not in self._subscribers:
+                self._subscribers.append(callback)
+
+    def unsubscribe(self, callback: Callable[[AgentEvent], None]):
+        with self._lock:
+            if callback in self._subscribers:
+                self._subscribers.remove(callback)
 
     def publish(self, event: AgentEvent):
-        for sub in self._subscribers:
+        with self._lock:
+            subscribers = tuple(self._subscribers)
+        for sub in subscribers:
             try:
                 sub(event)
             except Exception as e:

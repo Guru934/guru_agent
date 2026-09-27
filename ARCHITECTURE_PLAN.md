@@ -2,6 +2,8 @@
 
 This document outlines the strategic phases to evolve the `guru_agent` from a heuristic-scripted prototype into a robust, secure, and fully event-driven AI agent. 
 
+> The problems listed below record the original roadmap baseline and may no longer describe the current code. See [update.md](./update.md) and [PROJECT_STATUS.md](./PROJECT_STATUS.md) for the verified implementation status and remaining hardening work.
+
 ## The Core Problems to Solve
 1. **Security Boundaries are Leaky:** `agent/policy.py` checks things superficially, but parts of the codebase circumvent it by executing `execute_shell` or `write_file` directly.
 2. **Missing Agent Loop:** We rely on a "heavy agent" macro-loop instead of a strict atomic `PLAN -> ACT -> OBSERVE -> DECIDE` state machine.

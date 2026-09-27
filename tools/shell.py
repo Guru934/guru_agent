@@ -1,29 +1,100 @@
 import os
+import selectors
+import signal
 import subprocess
+import sys
+import time
+from pathlib import Path
 
-def execute_bash_command(command: str, cwd: str = None) -> str:
-    result = subprocess.run(
+from config import APP_DIR
+
+MAX_COMMAND_OUTPUT = 12_000
+COMMAND_TIMEOUT_SECONDS = 30
+
+
+def _command_environment():
+    executable_dir = str(Path(sys.executable).resolve().parent)
+    return {
+        "PATH": os.pathsep.join((executable_dir, "/usr/local/bin", "/usr/bin", "/bin")),
+        "HOME": str(APP_DIR),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+
+def execute_bash_command(command: str) -> str:
+    process = subprocess.Popen(
         command,
         shell=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=str(APP_DIR),
+        env=_command_environment(),
+        start_new_session=True,
+        bufsize=0,
+    )
+    if process.stdout is None:
+        process.kill()
+        process.wait()
+        raise RuntimeError("Shell command output pipe could not be opened.")
+
+    output = bytearray()
+    truncated = False
+    deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT_SECONDS, output=bytes(output))
+            for key, _ in selector.select(remaining):
+                chunk = os.read(key.fileobj.fileno(), 4096)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                room = MAX_COMMAND_OUTPUT - len(output)
+                output.extend(chunk[:room])
+                truncated = truncated or len(chunk) > room
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT_SECONDS, output=bytes(output))
+        return_code = process.wait(timeout=remaining)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        raise
+    finally:
+        selector.close()
+        process.stdout.close()
+
+    text = output.decode("utf-8", errors="replace").strip()
+    if truncated:
+        text += "\n[Output truncated.]"
+    if not text:
+        text = "Command completed without output."
+    if return_code:
+        return f"Command exited with status {return_code}.\n{text}"
+    return text
+
+def ripgrep_search_impl(query: str) -> str:
+    result = subprocess.run(
+        ["rg", "-n", query, "."],
         capture_output=True,
         text=True,
         check=False,
-        cwd=cwd or os.getcwd()
+        cwd=str(APP_DIR),
+        env=_command_environment(),
+        timeout=COMMAND_TIMEOUT_SECONDS,
     )
-    output = result.stdout.strip() or result.stderr.strip() or "Command completed without output."
-    return output
-
-def ripgrep_search_impl(query: str, cwd: str = None) -> str:
-    try:
-        result = subprocess.run(
-            ["rg", "-n", query, "."],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=cwd or os.getcwd(),
-        )
-        if result.stdout.strip():
-            return result.stdout.strip()
+    if result.returncode == 1:
         return "No matches found."
-    except FileNotFoundError:
-        return "rg is not installed. Install ripgrep if you want search support."
+    if result.returncode:
+        raise RuntimeError(f"ripgrep failed with status {result.returncode}: {result.stderr.strip()}")
+    output = result.stdout.strip()
+    if len(output) > MAX_COMMAND_OUTPUT:
+        output = output[:MAX_COMMAND_OUTPUT] + "\n[Output truncated.]"
+    return output

@@ -1,6 +1,4 @@
 import asyncio
-import time
-import os
 import random
 
 from google import genai
@@ -69,48 +67,21 @@ class GeminiDesktopAgent:
         self.vision = VisionInterface()
 
 
-        from google.genai import types
-        def delegate_task_to_heavy_agent(task_description: str) -> str:
-            """When the user asks for a complex coding task, refactor, or something you cannot do natively, use this tool to delegate the task to the heavy autonomous agent running in the terminal."""
-            from agent.agent import execute_task_async
-            execute_task_async(task_description)
-            return "Task delegated successfully! The heavy agent has been spun up in a background thread and is working on it."
-
-        from tools.browser import capture_screen_snapshot, describe_active_window
-        from tools.desktop import open_application, open_website
-        ALL_TOOLS = [delegate_task_to_heavy_agent, capture_screen_snapshot, describe_active_window, open_application, open_website]
-
-
         logger.info(f"Connecting to Gemini Live API with model: {self.current_model}")
 
         system_instructions = (
-            "You are 'Chibi', a cheerful, cute, and ultra-helpful desktop AI companion. "
-            "You have direct access to the user's computer via tools! You can open apps, open websites in browser, "
-            "read the clipboard (including currently highlighted text via primary_selection=True), check the active window, set the volume, set brightness, take screenshots, "
-            "control media, switch workspaces, and send notifications. "
-            "YOU HAVE VISION ON DEMAND - when the user asks you to look at something, use the take_screenshot tool "
-            "to capture the screen and analyze it. "
-            f"To click something on the screen, intelligently guess the X, Y coordinate based on the exact screen "
-            f"resolution of {self.vision.monitor_width}x{self.vision.monitor_height}. You MUST output absolute pixel "
-            "coordinates mapping to this grid and use the click_screen(x,y) tool. "
-            "When asked to open something or perform an OS task, ALWAYS execute the appropriate tool function. "
-            "Never say you cannot see or control the PC. Use your tools immediately to fulfill the request! "
-            "If the user asks to format/fix highlighted text, use get_clipboard(primary_selection=True), process it, and use set_clipboard(text) to copy the result."
+            "You are a voice conversation assistant. This realtime session has no OS tools. "
+            "Do not claim to perform desktop actions; explain that actions must be submitted through the main assistant."
         )
 
         try:
             while not self.stop_event.is_set():
                 try:
                     
-                    dynamic_instructions = system_instructions
-                    if False:
-                        dynamic_instructions += f"\n\n[SYSTEM MEMORY RECOVERY]: Your connection just dropped and you forgot the last few seconds. Right before you dropped, you asked the user for permission to run `{"previous_action"}`. If the user says \"yes\" or gives you permission right now, YOU MUST IMMEDIATELY CALL THE `confirm_action` TOOL to execute it!"
-                    
                     config = types.LiveConnectConfig(
                         response_modalities=["AUDIO"],
-                        system_instruction=types.Content(parts=[types.Part(text=dynamic_instructions)]),
+                        system_instruction=types.Content(parts=[types.Part(text=system_instructions)]),
                         output_audio_transcription=types.AudioTranscriptionConfig(word_timestamp=False),
-                        tools=ALL_TOOLS
                     )
 
                     self._force_reconnect = False
@@ -194,95 +165,7 @@ class GeminiDesktopAgent:
                                                         self._set_glow(glow_callback, "connected")
 
                                     if hasattr(msg, "tool_call") and msg.tool_call:
-                                        
-
-                                        tool_func_map = {func.__name__: func for func in ALL_TOOLS}
-
-                                        responses = []
-                                        for function_call in msg.tool_call.function_calls:
-                                            result_dict = {"error": "Function not found"}
-                                            if function_call.name in tool_func_map:
-                                                func = tool_func_map[function_call.name]
-                                                try:
-                                                    args = function_call.args if hasattr(function_call, "args") and function_call.args else {}
-
-                                                    # Show processing state for tool calls
-                                                    if function_call.name in {"click_screen", "type_text", "press_key", 
-                                                        "open_application", "open_website", "search_and_play_youtube",
-                                                        "set_volume", "set_brightness", "take_screenshot"}:
-                                                        self._set_state(state_callback, "thinking")
-                                                        self._set_glow(glow_callback, "processing")
-
-                                                    start_time = time.time()
-                                                    if isinstance(args, dict):
-                                                        result = func(**args)
-                                                    else:
-                                                        result = func()
-                                                    duration = time.time() - start_time
-                                                    
-                                                    # Send notification if task took more than 3 seconds
-                                                    if duration > 3.0:
-                                                        pass
-                                                        res_str = str(result)
-                                                        if len(res_str) > 100: res_str = res_str[:97] + "..."
-                                                        pass
-
-                                                    # Handle vision-on-demand for take_screenshot
-                                                    if function_call.name == "take_screenshot" and isinstance(result, str) and "Saved screenshot" in result:
-                                                        self._set_glow(glow_callback, "vision")
-                                                        # Capture frame and send to Gemini for analysis
-                                                        try:
-                                                            monitor_arg = args.get("monitor", "") if isinstance(args, dict) else ""
-                                                            frame = self.vision.capture_frame(monitor=monitor_arg)
-                                                            if frame:
-                                                                async with send_lock:
-                                                                    await session.send_realtime_input(
-                                                                        video=types.Blob(data=frame, mime_type='image/jpeg')
-                                                                    )
-                                                            self._set_bubble(bubble_callback, "📸 Screenshot captured and sent to Gemini")
-                                                        except Exception as e:
-                                                            logger.error(f"Screenshot send error: {e}", exc_info=True)
-                                                        # For now, the model will respond based on the tool result text
-                                                    if function_call.name == "inspect_screen":
-                                                        try:
-                                                            monitor_arg = args.get("monitor", "") if isinstance(args, dict) else ""
-                                                            frame = self.vision.capture_frame(monitor=monitor_arg)
-                                                            if frame:
-                                                                async with send_lock:
-                                                                    await session.send_realtime_input(
-                                                                        video=types.Blob(data=frame, mime_type='image/jpeg')
-                                                                    )
-                                                                self._set_bubble(bubble_callback, "📸 Screen analyzed by Gemini")
-                                                        except Exception as e:
-                                                            logger.error(f"Inspect screen error: {e}", exc_info=True)
-
-                                                    # Update UI depending on outcome
-                                                    if isinstance(result, str) and "You MUST verbally ask the user for permission" in result:
-                                                        if text_callback:
-                                                            text_callback("system", f"⚠️ WAITING FOR VOICE APPROVAL: {function_call.name}")
-                                                        logger.warning(f"VOICE APPROVAL REQUIRED: Chibi wants to {function_call.name} with args {args}")
-                                                    else:
-                                                        if text_callback:
-                                                            text_callback("system", f"🛠️ Executed {function_call.name}: {result}")
-                                                        logger.info(f"🛠️ Executed {function_call.name}: {result}")
-
-                                                    result_dict = {"result": result}
-                                                except Exception as err:
-                                                    result_dict = {"error": str(err)}
-
-                                            responses.append(types.FunctionResponse(
-                                                id=function_call.id,
-                                                name=function_call.name,
-                                                response=result_dict
-                                            ))
-
-                                        if responses:
-                                            async with send_lock:
-                                                await session.send_tool_response(function_responses=responses)
-                                            
-                                            # Return to listening after tool execution
-                                            self._set_state(state_callback, "listening")
-                                            self._set_glow(glow_callback, "connected")
+                                        logger.error("Ignoring a realtime tool call; OS tools are disabled in this provider.")
 
                             except Exception as e:
                                 logger.error(f"Receive interrupted (reconnecting): {e}", exc_info=True)

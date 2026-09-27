@@ -1,5 +1,6 @@
 import unittest
 import threading
+import tempfile
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 import os
@@ -15,14 +16,18 @@ from agent.state import TaskState
 
 class CoreEvaluationSuite(unittest.TestCase):
     """
-    Phase 7 Evaluation Suite.
-    Deterministic boundaries ensuring Workspace Sandboxes, OS Policy mapping, ReAct looping,
+    Deterministic regression checks for workspace policy, agent runtime,
     and asynchronous GUI <-> Background tool blocking executes transactionally.
     """
 
     def setUp(self):
         # Guarantee safe mode is uniformly enabled for the tests
         policy_engine.safe_mode = True
+        audit_dir = tempfile.TemporaryDirectory()
+        original_audit_file = policy_engine.audit_file
+        policy_engine.audit_file = Path(audit_dir.name) / "security_audit.log"
+        self.addCleanup(setattr, policy_engine, "audit_file", original_audit_file)
+        self.addCleanup(audit_dir.cleanup)
 
     def test_eval_01_policy_deny_destructive_commands(self):
         # Scenario: Threat agent attempts to bypass constraints via standard tool execution shell
@@ -94,8 +99,7 @@ class CoreEvaluationSuite(unittest.TestCase):
         result = executor.execute("execute_shell", {"command": "mkfs /dev/sda"}, {"task_id": "eval"})
         self.assertEqual(result.status, "denied")
 
-    @patch('agent.approvals.PendingApproval')
-    def test_eval_07_executor_approvals_block_until_granted(self, MockApproval):
+    def test_eval_07_executor_approvals_block_until_granted(self):
         # Scenario: High-risk scripts block background operations utilizing async UI Thread locking
         executor = ToolExecutor(registry)
 
@@ -103,13 +107,10 @@ class CoreEvaluationSuite(unittest.TestCase):
         def _execute_in_background():
             return executor.execute("execute_shell", {"command": "pip install reqs"}, {"task_id": "eval_7"})
 
-        def _mock_success():
-            return ExecutionResult("success", "completed")
-
         # Hook the registry temporarily to mock shell avoiding actual installs on the tester's machine
         original_handler = registry.get_tool("execute_shell")
         try:
-            registry._tools["execute_shell"].handler = lambda cmd: "installed!"
+            registry._tools["execute_shell"].handler = lambda command: "installed!"
 
             # Start background tool execution
             import concurrent.futures
@@ -161,40 +162,38 @@ class CoreEvaluationSuite(unittest.TestCase):
         self.assertEqual(spec.risk, "high")
         self.assertIn("command", spec.input_schema["properties"])
 
-    @patch('google.genai.Client')
-    def test_eval_10_runtime_cancellation_terminates_loop(self, MockClient):
+    def test_eval_10_runtime_cancellation_terminates_loop(self):
         # Scenario: If User hits Cancel button, ReAct step processing cuts infinite generation explicitly
-        runtime = AgentRuntime()
-
-        # Override the mocked client to return dummy responses keeping the process busy
-        mock_response = MagicMock()
-        mock_response.function_calls = []
-        mock_response.text = "test output"
-        # Nested mock chaining to bypass API requests safely during Unit Testing
-        runtime.client.chats.create.return_value.send_message.return_value = mock_response
+        runtime = AgentRuntime(model_id="ollama-test")
 
         # Emulate a loop cancellation instantly
         task_id = "cancel_eval_10"
-        runtime.cancel_task(task_id)
+        cancellation = threading.Event()
+        cancellation.set()
 
-        state = runtime.run("Start working", task_id=task_id)
+        with patch('agent.runtime.create_agent_session') as create_session:
+            state = runtime.run("Start working", task_id=task_id, cancellation_event=cancellation)
+        create_session.assert_not_called()
         self.assertEqual(state.error, "Task cancelled by user.")
         self.assertTrue(state.completed)
 
-    @patch('google.genai.Client')
-    def test_eval_11_runtime_max_steps_halts_infinite_loops(self, MockClient):
+    @patch('agent.runtime.create_agent_session')
+    def test_eval_11_runtime_max_steps_halts_infinite_loops(self, create_session):
         # Scenario: Gemini bugs out and gets stuck looping identical `ls` operations forever. We halt at max.
         runtime = AgentRuntime()
 
         # Generate an adversarial response that infinitely calls functions
-        bad_response = MagicMock()
-        bad_fn = MagicMock()
-        bad_fn.name = "execute_shell"
-        bad_fn.args = {"command": "ls"}
-        bad_response.function_calls = [bad_fn]
-        bad_response.text = ""
+        from agent.model_provider import AgentFunctionCall, AgentResponse
 
-        runtime.client.chats.create.return_value.send_message.return_value = bad_response
+        bad_response = AgentResponse(
+            text="",
+            function_calls=[AgentFunctionCall(name="search", arguments={"query": "test"})],
+        )
+        fake_session = MagicMock()
+        fake_session.send_message.return_value = bad_response
+        fake_session.send_tool_results.return_value = bad_response
+        create_session.return_value = fake_session
+        runtime.executor.execute = MagicMock(return_value=ExecutionResult("success", "matched"))
 
         state = runtime.run("Begin infinite loop")
         # Ensure we safely terminate and report it

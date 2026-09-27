@@ -1,135 +1,130 @@
-import time
-import logging
+import threading
 import uuid
-from typing import Optional
-from google import genai
-from google.genai import types
+from typing import Dict, List, Optional
 
-from agent.state import TaskState
 from agent.events import emit
 from agent.executor import ToolExecutor
+from agent.model_provider import create_agent_session
+from agent.state import TaskState
 from agent.tool_registry import registry
+
 
 class AgentRuntime:
     def __init__(self, model_id: str = "gemini-2.5-flash"):
         self.model_id = model_id
         self.executor = ToolExecutor(registry)
-        self.client = genai.Client()
-        self._cancellation_tokens = set()
+        self._cancellation_tokens: Dict[str, threading.Event] = {}
+        self._cancellation_lock = threading.Lock()
 
-    def cancel_task(self, task_id: str):
-        self._cancellation_tokens.add(task_id)
+    def cancel_task(self, task_id: str) -> bool:
+        with self._cancellation_lock:
+            token = self._cancellation_tokens.get(task_id)
+            if token is not None:
+                token.set()
+                return True
+            return False
 
-    def run(self, request: str, task_id: str = None) -> TaskState:
-        if not task_id:
-            task_id = str(uuid.uuid4())
-            
+    def cancel_all(self):
+        with self._cancellation_lock:
+            for token in self._cancellation_tokens.values():
+                token.set()
+
+    def run(
+        self,
+        request: str,
+        task_id: Optional[str] = None,
+        history: Optional[List[Dict[str, str]]] = None,
+        system_instruction: Optional[str] = None,
+        cancellation_event: Optional[threading.Event] = None,
+        enable_tools: bool = True,
+    ) -> TaskState:
+        task_id = task_id or str(uuid.uuid4())
+        with self._cancellation_lock:
+            if task_id in self._cancellation_tokens:
+                raise ValueError(f"Task {task_id} is already running.")
+            cancellation = cancellation_event or threading.Event()
+            self._cancellation_tokens[task_id] = cancellation
+
         state = TaskState(task_id=task_id, original_request=request)
         emit("TASK_STARTED", task_id, {"description": request})
-        
-        system_instruction = (
-            "You are a local autonomous desktop agent. You execute OS and codebase operations safely."
-            "Think systematically. First you PLAN, then you ACT by calling tools."
-            "If the tool execution output shows an issue, adapt your plan."
-            "When the final goal is met, respond normally in plain text to end the session."
-        )
-
-
-        from google.genai.types import FunctionDeclaration, Type, Schema
-        
-        declarations = []
-        for spec in registry.get_all_specs():
-            # Build schema mapping
-            props = {}
-            for prop_name, prop_val in spec.input_schema["properties"].items():
-                p_type = Type.STRING if prop_val["type"] == "STRING" else Type.STRING
-                props[prop_name] = Schema(type=p_type)
-                
-            decl = FunctionDeclaration(
-                name=spec.name,
-                description=spec.description,
-                parameters=Schema(
-                    type=Type.OBJECT,
-                    properties=props,
-                    required=spec.input_schema["required"]
-                )
+        default_instruction = (
+            "You are a helpful local desktop assistant. "
+            + (
+                "Use registered tools for local operations. Tool arguments are validated and policy-checked. "
+                if enable_tools
+                else "No tools are available for this request; answer directly. "
             )
-            declarations.append(decl)
-
-        tools = [types.Tool(function_declarations=declarations)]
-
-        chat = self.client.chats.create(
-            model=self.model_id,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                tools=tools,
-                temperature=0.0
-            )
+            + "Adapt to tool observations and provide a plain-text final answer when done."
         )
-        
+        system_instruction = "\n\n".join(
+            part for part in (system_instruction, default_instruction) if part
+        )
+        conversation = list(history or [])
         try:
             emit("LOG", task_id, {"msg": f"Starting agent runtime for prompt: {request}"})
-            response = chat.send_message(request)
+            if cancellation.is_set():
+                state.error = "Task cancelled by user."
+                state.completed = True
+                response = None
+            else:
+                session = create_agent_session(
+                    self.model_id,
+                    system_instruction,
+                    registry.get_all_specs() if enable_tools else [],
+                    conversation,
+                )
+                response = session.send_message(request)
 
             while not state.completed:
-                if task_id in self._cancellation_tokens:
+                if cancellation.is_set():
                     state.error = "Task cancelled by user."
                     state.completed = True
                     break
-                    
+
                 if state.step_count >= state.max_steps:
                     state.error = f"Task exceeded maximum steps ({state.max_steps})."
                     state.completed = True
                     break
 
-                if response.function_calls:
-                    for fn_call in response.function_calls:
-                        action = fn_call.name
-                        # unpack dictionary of arguments safely
-                        args = {k: v for k, v in fn_call.args.items()} 
-
-                        result = self.executor.execute(action, args, {"task_id": task_id})
-                        is_error = result.status in ["denied", "error"]
-                        result_text = str(result.output)
-                        
-                        state.add_observation(action, args, result_text, is_error=is_error)
-                        
-                        # Tell Gemini the observation
-                        # In the new genai API, responding to a function call usually means passing a Part with FunctionResponse
-                        emit("LOG", task_id, {"msg": f"Tool '{action}' resulted in: {result_text[:100]}..."})
-                    
-                    state.step_count += 1
-                    
-                    # Pass the aggregated function responses back to the bot
-                    # (Google genai requires passing FunctionResponses properly to the history or via send_message)
-                    # For simplicity, we can pass it as a normal message for now, though best practice is types.Part.from_function_response
-                    function_responses = []
-                    for fn_call in response.function_calls:
-                        for obs in state.observations[-len(response.function_calls):]: # get the most recent ones
-                            if obs.tool_name == fn_call.name:
-                                resp_dict = {"output": obs.result}
-                                function_responses.append(
-                                    types.Part.from_function_response(
-                                        name=fn_call.name,
-                                        response=resp_dict
-                                    )
-                                )
-                                break
-                    
-                    response = chat.send_message(function_responses)
-                
-                else:
-                    # No function calls means it gave a standard final text answer!
+                if not response.function_calls:
                     state.final_answer = response.text
                     state.completed = True
+                    break
 
-        except Exception as e:
-            state.error = f"Agent runtime crash: {e}"
+                calls = response.function_calls
+                results = []
+                for call in calls:
+                    result = self.executor.execute(
+                        call.name,
+                        call.arguments,
+                        {"task_id": task_id, "cancel_event": cancellation},
+                    )
+                    result_text = str(result.output)
+                    state.add_observation(
+                        call.name,
+                        call.arguments,
+                        result_text,
+                        is_error=result.status not in {"success"},
+                    )
+                    results.append(result_text)
+                    emit(
+                        "LOG",
+                        task_id,
+                        {"msg": f"Tool '{call.name}' resulted in: {result_text[:100]}..."},
+                    )
+
+                state.step_count += 1
+                response = session.send_tool_results(calls, results)
+
+        except Exception as error:
+            state.error = f"Agent runtime failed: {error}"
             state.completed = True
-            
+        finally:
+            with self._cancellation_lock:
+                self._cancellation_tokens.pop(task_id, None)
+
         if state.error:
             emit("TASK_FAILED", task_id, {"error": state.error})
         else:
             emit("TASK_COMPLETED", task_id, {"result": state.final_answer})
-            
         return state

@@ -1,12 +1,17 @@
-
-import os
-import uuid
 import datetime
-from pathlib import Path
+import hashlib
+import logging
+import shlex
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
+
 from agent.tool_registry import registry
-from config import WORKSPACE_ROOTS, USER_STATE_DIR
-from agent.events import emit
+from config import APP_DIR, USER_STATE_DIR
+from tools.workspace import resolve_workspace_path
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class PolicyDecision:
@@ -15,92 +20,148 @@ class PolicyDecision:
     risk_level: str
     reason: str
 
+
 class PolicyEngine:
     def __init__(self, safe_mode: bool = True):
         self.safe_mode = safe_mode
-        self.blocked_commands = [
-            "rm -rf /", "mkfs", "dd if=", "shutdown", "reboot", 
-            "passwd", "chown -R", "chmod -R 777", "curl | bash",
-            "wget -qO-", "nc -e", "> /dev/sda"
-        ]
-        
-        self.safe_commands = [
-            "ls", "pwd", "whoami", "echo", "cat", "git status", 
-            "git diff", "git log", "pytest", "python -m unittest"
-        ]
+        self.blocked_executables = {
+            "dd", "mkfs", "mkfs.btrfs", "mkfs.ext4", "mkfs.fat", "mkfs.xfs",
+            "passwd", "reboot", "rm", "shutdown", "su", "sudo",
+        }
         self.audit_file = USER_STATE_DIR / "security_audit.log"
-        
-    def _log_audit(self, tool_name: str, arguments: dict, target_risk: str, decision: PolicyDecision):
-        """Append to strict security audit log outside the project root."""
+
+    def _log_audit(self, tool_name: str, arguments: dict, target_risk: str, decision: PolicyDecision) -> bool:
         try:
+            argument_summary = {}
+            if "path" in arguments:
+                argument_summary["path"] = str(arguments["path"])[:500]
+            if "content" in arguments:
+                argument_summary["content_length"] = len(str(arguments["content"]))
+            for field in ("command", "query", "request"):
+                if field in arguments:
+                    argument_summary[f"{field}_sha256"] = hashlib.sha256(
+                        str(arguments[field]).encode("utf-8")
+                    ).hexdigest()
             timestamp = datetime.datetime.now().isoformat()
-            log_line = f"[{timestamp}] TOOL={tool_name} RISK={target_risk} ALLOWED={decision.allowed} APPROVAL={decision.requires_approval} REASON='{decision.reason}' ARGS={arguments}\n"
-            with open(self.audit_file, "a") as f:
-                f.write(log_line)
-        except Exception:
-            pass
+            log_line = (
+                f"[{timestamp}] TOOL={tool_name} RISK={target_risk} "
+                f"ALLOWED={decision.allowed} APPROVAL={decision.requires_approval} "
+                f"REASON={decision.reason!r} ARGUMENTS={argument_summary!r}\n"
+            )
+            with open(self.audit_file, "a", encoding="utf-8") as audit:
+                audit.write(log_line)
+            return True
+        except OSError:
+            logger.exception("Unable to append to the security audit log.")
+            return False
 
-    def _is_path_allowed(self, path_str: str) -> bool:
-        """Check if a path falls within the allowed workspace roots."""
+    def _is_path_allowed(self, path_str: str, cwd: Path = APP_DIR) -> bool:
         try:
-            target = Path(os.path.expanduser(path_str)).resolve()
-            for root in WORKSPACE_ROOTS:
-                if target == root or target.is_relative_to(root):
-                    return True
+            resolve_workspace_path(path_str, cwd)
+            return True
+        except PermissionError:
             return False
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Unable to resolve path during workspace policy evaluation.")
             return False
 
-    def evaluate(self, tool_name: str, arguments: dict, context: dict) -> PolicyDecision:
-        spec = registry.get_spec(tool_name)
+    @staticmethod
+    def _has_shell_operators(command: str) -> bool:
+        return any(character in command for character in (";", "|", "&", "`", "$", "<", ">", "\n"))
+
+    def _safe_path_arguments(self, tokens: Sequence[str], options: str = "") -> bool:
+        for token in tokens:
+            if token.startswith("-"):
+                if not token[1:] or any(character not in options for character in token[1:]):
+                    return False
+            elif not self._is_path_allowed(token):
+                return False
+        return True
+
+    def _is_safe_shell_command(self, command: str, tokens: Sequence[str]) -> bool:
+        if self._has_shell_operators(command):
+            return False
+        executable = Path(tokens[0]).name
+        args = list(tokens[1:])
+
+        if executable in {"pwd", "whoami"}:
+            return not args
+        if executable == "echo":
+            return True
+        if executable == "ls":
+            return self._safe_path_arguments(args, options="lah")
+        if executable == "cat":
+            return bool(args) and all(self._is_path_allowed(arg) for arg in args)
+        if executable == "git":
+            return tokens in (["git", "status"], ["git", "diff"], ["git", "log"])
+        return False
+
+    def _evaluate_shell(self, command: str, risk: str) -> PolicyDecision:
+        try:
+            tokens = shlex.split(command, posix=True)
+        except ValueError as error:
+            return PolicyDecision(False, False, "high", f"Invalid shell command syntax: {error}")
+        if not tokens:
+            return PolicyDecision(False, False, "low", "Empty shell commands are not allowed.")
+
+        executable = Path(tokens[0]).name.lower()
+        if executable in self.blocked_executables or executable.startswith("mkfs."):
+            return PolicyDecision(False, False, "critical", f"Execution of {executable!r} is blocked by policy.")
+        if executable in {"chmod", "chown"} and any(arg in {"-R", "--recursive"} for arg in tokens[1:]):
+            return PolicyDecision(False, False, "critical", f"Recursive {executable} operations are blocked by policy.")
+
+        if self._is_safe_shell_command(command, tokens):
+            return PolicyDecision(True, False, "low", "Command matches the restricted read-only command policy.")
+        if self.safe_mode:
+            return PolicyDecision(
+                True,
+                True,
+                risk,
+                "Command is outside the restricted read-only allowlist and requires explicit approval.",
+            )
+        return PolicyDecision(True, False, risk, "Safe mode is disabled; command is permitted by user preference.")
+
+    def evaluate(self, tool_name: str, arguments: dict, context: dict, tool_registry=registry) -> PolicyDecision:
+        spec = tool_registry.get_spec(tool_name)
         if not spec:
-            dec = PolicyDecision(False, False, "unknown", f"Tool {tool_name} is not registered.")
-            self._log_audit(tool_name, arguments, "unknown", dec)
-            return dec
-            
-        risk = spec.risk
-        decision = None
-        
-        if tool_name == "execute_shell":
-            cmd = arguments.get("command", "")
-            
-            # 1. Check BLOCKED commands
-            if any(blk in cmd for blk in self.blocked_commands):
-                decision = PolicyDecision(False, False, "critical", "Command matches a heavily restricted BLOCKED signature.")
-            else:
-                # 2. Check SAFE commands
-                cmd_basename = cmd.strip().split()[0] if cmd.strip() else ""
-                is_implicitly_safe = any(cmd.strip().startswith(safe_cmd) for safe_cmd in self.safe_commands)
-                
-                if is_implicitly_safe:
-                    decision = PolicyDecision(True, False, "low", "Known read-only or harmless diagnostic command.")
-                # 3. Handling modifications and unknown commands (APPROVAL tier)
-                elif self.safe_mode:
-                    decision = PolicyDecision(True, True, risk, "Safe mode requires manual approval for potentially mutable shell execution.")
-                else:
-                    decision = PolicyDecision(True, False, risk, "Shell execution allowed without safe mode.")
-            
-        elif tool_name in ["write_file", "read_file", "search"]:
-            path = arguments.get("path", "") or arguments.get("query", "") # if search query acts on a path
-            if getattr(spec, "name") in ["write_file", "read_file"] and not self._is_path_allowed(path):
-                decision = PolicyDecision(False, False, "critical", f"Path '{path}' is OUTSIDE the allowed workspace roots.")
-            elif risk == "high" or risk == "medium":
-                if self.safe_mode:
-                    decision = PolicyDecision(True, True, risk, f"Safe mode requires manual approval for {risk}-risk actions.")
-                else:
-                    decision = PolicyDecision(True, False, risk, f"{risk.capitalize()}-risk action allowed.")
-            else:
-                decision = PolicyDecision(True, False, risk, "Low-risk action allowed automatically.")
-                
-        else:
-            # Fallback wrapper
-            decision = PolicyDecision(True, False, risk, "Fallback generic low-risk rule.")
-
-        # Log and return
-        if decision:
-            self._log_audit(tool_name, arguments, risk, decision)
+            decision = PolicyDecision(False, False, "unknown", f"Tool {tool_name} is not registered.")
+            self._log_audit(tool_name, arguments, "unknown", decision)
             return decision
 
-        return PolicyDecision(False, False, "error", "Policy engine fell through to default block rule.")
+        risk = spec.risk
+        if tool_name == "execute_shell":
+            decision = self._evaluate_shell(str(arguments.get("command", "")), risk)
+        elif tool_name in {"write_file", "read_file"}:
+            path = arguments.get("path", "")
+            if not self._is_path_allowed(path):
+                decision = PolicyDecision(
+                    False, False, "critical",
+                    f"Path {path!r} is outside the allowed workspace roots.",
+                )
+            elif risk in {"high", "medium"} and self.safe_mode:
+                decision = PolicyDecision(
+                    True, True, risk, f"Safe mode requires manual approval for {risk}-risk actions."
+                )
+            else:
+                decision = PolicyDecision(True, False, risk, f"{risk.capitalize()}-risk action allowed.")
+        else:
+            decision = PolicyDecision(
+                True,
+                risk in {"high", "medium"} and self.safe_mode,
+                risk,
+                f"Safe mode requires manual approval for {risk}-risk actions."
+                if risk in {"high", "medium"} and self.safe_mode
+                else f"{risk.capitalize()}-risk action allowed.",
+            )
+
+        if not self._log_audit(tool_name, arguments, risk, decision):
+            return PolicyDecision(
+                False,
+                False,
+                "critical",
+                "Security audit could not be written; tool execution is denied.",
+            )
+        return decision
+
 
 engine = PolicyEngine(safe_mode=True)

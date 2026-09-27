@@ -24,19 +24,7 @@ from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.formatters import HtmlFormatter
 from pygments.styles import get_style_by_name 
 
-from tools.browser import (
-    analyze_screen_image,
-    build_approval_message,
-    capture_screen_snapshot,
-    describe_active_window,
-    describe_current_screen,
-    transcribe_audio_from_microphone,
-    voice_input_status,
-)
 from memory.sqlite import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
-from tools.desktop import handle_desktop_action
-from providers import get_installed_models, chat_completion_stream
-from agent.planner import AgentOrchestrator
 
 
 # --- Constants & Style (Dracula theme colors) --

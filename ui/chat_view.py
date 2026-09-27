@@ -24,19 +24,7 @@ from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.formatters import HtmlFormatter
 from pygments.styles import get_style_by_name 
 
-from tools.browser import (
-    analyze_screen_image,
-    build_approval_message,
-    capture_screen_snapshot,
-    describe_active_window,
-    describe_current_screen,
-    transcribe_audio_from_microphone,
-    voice_input_status,
-)
 from memory.sqlite import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
-from tools.desktop import handle_desktop_action
-from providers import get_installed_models, chat_completion_stream
-from agent.planner import AgentOrchestrator
 
 
 # --- Constants & Style (Dracula theme colors) --
@@ -285,45 +273,66 @@ QPushButton#send_btn:hover {{
 
 
 
-class ChatWorker(QObject):
-    chunk_received = pyqtSignal(str)
-    finished = pyqtSignal(str) 
-    error_occurred = pyqtSignal(str, str) 
-    visualizer_state_signal = pyqtSignal(str)
-    visualizer_glow_signal = pyqtSignal(str)
+class AgentWorker(QObject):
+    state_finished = pyqtSignal(object)
 
-    def __init__(self, model_id: str, messages: List[Dict[str, Any]], visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
+    def __init__(
+        self,
+        model_id: str,
+        request: str,
+        history: List[Dict[str, Any]],
+        task_id: str,
+        system_instruction: str = "",
+        visualizer_state_emitter: Optional[QObject] = None,
+        visualizer_glow_emitter: Optional[QObject] = None,
+        enable_tools: bool = True,
+    ):
         super().__init__()
         self.model_id = model_id
-        self.messages = messages
+        self.request = request
+        self.history = history
+        self.task_id = task_id
+        self.system_instruction = system_instruction
         self.visualizer_state_emitter = visualizer_state_emitter
         self.visualizer_glow_emitter = visualizer_glow_emitter
-        
-    def run(self):
-        full_response = ""
-        try:
-            if self.visualizer_state_emitter:
-                self.visualizer_state_emitter.emit("thinking")
-            if self.visualizer_glow_emitter:
-                self.visualizer_glow_emitter.emit("thinking")
+        self.enable_tools = enable_tools
+        self.runtime = None
+        self.cancel_event = threading.Event()
 
-            for chunk in chat_completion_stream(self.model_id, self.messages):
-                full_response += chunk
-                self.chunk_received.emit(chunk)
-        except Exception as e:
-            error_title = "API Error"
-            error_message = str(e)
-            if "ConnectionRefusedError" in error_message or "Could not connect" in error_message:
-                error_message = "Could not connect to the Ollama server. Please ensure Ollama is running."
-                error_title = "Ollama Connection Error"
-            self.error_occurred.emit(error_title, error_message)
-            full_response = f"ERROR: {error_message}" 
+    def cancel(self):
+        self.cancel_event.set()
+
+    def run(self):
+        from agent.runtime import AgentRuntime
+        from agent.state import TaskState
+
+        if self.visualizer_state_emitter:
+            self.visualizer_state_emitter.emit("thinking")
+        if self.visualizer_glow_emitter:
+            self.visualizer_glow_emitter.emit("thinking")
+        try:
+            self.runtime = AgentRuntime(model_id=self.model_id)
+            state = self.runtime.run(
+                self.request,
+                task_id=self.task_id,
+                history=self.history,
+                system_instruction=self.system_instruction,
+                cancellation_event=self.cancel_event,
+                enable_tools=self.enable_tools,
+            )
+        except Exception as error:
+            state = TaskState(
+                task_id=self.task_id,
+                original_request=self.request,
+                completed=True,
+                error=f"Unable to start agent runtime: {error}",
+            )
         finally:
             if self.visualizer_state_emitter:
                 self.visualizer_state_emitter.emit("idle")
             if self.visualizer_glow_emitter:
                 self.visualizer_glow_emitter.emit("connected")
-            self.finished.emit(full_response)
+        self.state_finished.emit(state)
 
 
 
@@ -338,4 +347,3 @@ class TranscriptionWorker(QThread):
         from tools.browser import transcribe_audio_file
         transcript = transcribe_audio_file(self.audio_path)
         self.finished_signal.emit(transcript)
-

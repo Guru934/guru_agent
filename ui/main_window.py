@@ -2,8 +2,8 @@ import sys
 from PyQt6 import sip
 import threading
 import datetime
-import re
 import uuid
+import html
 from typing import Optional, List, Any, Dict
 
 from PyQt6.QtWidgets import (
@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QComboBox, QTextBrowser, QTextEdit,
     QPushButton, QListWidgetItem, QSplitter, QLabel,
     QScrollArea, QSizePolicy, QFrame, QApplication,
-    QMessageBox, QSpacerItem, QStyleFactory, QToolButton, QDialog, QCheckBox,
+    QMessageBox, QSpacerItem, QStyleFactory, QToolButton, QCheckBox,
     QGridLayout, QStyle
 )
 from PyQt6.QtCore import QThread, Qt, pyqtSignal, QObject, QSize, QTimer, QPropertyAnimation, QEasingCurve, QSizeF
@@ -25,19 +25,13 @@ from pygments.formatters import HtmlFormatter
 from pygments.styles import get_style_by_name 
 
 from tools.browser import (
-    analyze_screen_image,
-    build_approval_message,
-    capture_screen_snapshot,
-    describe_active_window,
-    describe_current_screen,
     transcribe_audio_from_microphone,
     voice_input_status,
 )
 from memory.sqlite import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
-from tools.desktop import handle_desktop_action
-from providers import get_installed_models, chat_completion_stream
+from providers import get_installed_models
 from ui.widgets import AutoResizingTextEdit, MarkdownTextBrowser, SessionRowWidget, DummyVisualizerEmitter, MessageBubble
-from ui.chat_view import ChatWorker, TranscriptionWorker
+from ui.chat_view import AgentWorker, TranscriptionWorker
 from ui.approval_dialog import ApprovalDialog
 from agent.planner import AgentOrchestrator
 
@@ -301,6 +295,9 @@ class GlobalAgentListener(QObject):
     def handle_event(self, event: AgentEvent):
         self.event_signal.emit(event)
 
+    def close(self):
+        bus.unsubscribe(self.handle_event)
+
 class ScratchpadWindow(QMainWindow):
     def __init__(self, visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
         super().__init__()
@@ -328,10 +325,6 @@ class ScratchpadWindow(QMainWindow):
         self.setStyleSheet(QSS_STYLES) 
         self.current_session_id: Optional[str] = None # Explicitly type as Optional[str]
         self.chat_history: List[Dict[str, Any]] = []
-        self.pending_action_id: Optional[str] = None
-        self.chat_worker_thread: Optional[threading.Thread] = None
-        self.current_ai_response_bubble_text_display: Optional[MarkdownTextBrowser] = None
-        self.current_ai_response_content: str = ""
         self.voice_in_progress = False
         self.voice_worker: Optional[QThread] = None
         self.voice_cancel_requested = False
@@ -341,8 +334,11 @@ class ScratchpadWindow(QMainWindow):
         self.agent_listener = GlobalAgentListener()
         self.agent_listener.event_signal.connect(self.on_agent_event)
         
-        self.current_task_bubble = None
-        self.current_task_steps = []
+        self.task_panels: Dict[str, Dict[str, Any]] = {}
+        self.agent_workers: Dict[str, AgentWorker] = {}
+        self.agent_worker_threads: Dict[str, threading.Thread] = {}
+        self.agent_task_sessions: Dict[str, Optional[str]] = {}
+        self.agent_response_bubbles: Dict[str, Any] = {}
 
 
         
@@ -351,6 +347,8 @@ class ScratchpadWindow(QMainWindow):
         self.live_agent = None
 
         self.orchestrator = AgentOrchestrator(default_model="gemini-3.1-flash-lite", safe_mode=(get_preference("safe_mode", "true") == "true"))
+        from agent.policy import engine as policy_engine
+        policy_engine.safe_mode = self.orchestrator.safe_mode
 
         self.model_name_map = {
             "gemini-3.1-flash-live-preview": "Gemini Live (Cloud)",
@@ -842,12 +840,12 @@ class ScratchpadWindow(QMainWindow):
     def on_voice_status_clicked(self):
         self.start_voice_capture()
     def on_screen_snapshot_clicked(self):
-        summary = describe_current_screen()
-        self.add_system_message_to_feed(f"### 🖥️ Full Screen Analysis\n\n{summary}", is_error=False)
+        self.input_box.setPlainText("Describe what's on screen.")
+        self.send_message()
 
     def on_active_window_snapshot_clicked(self):
-        summary = describe_active_window()
-        self.add_system_message_to_feed(f"### 🪟 Active Window Content\n\n{summary}", is_error=False)
+        self.input_box.setPlainText("Describe the active window.")
+        self.send_message()
 
     def send_message(self):
         text = self.input_box.toPlainText().strip()
@@ -856,6 +854,9 @@ class ScratchpadWindow(QMainWindow):
 
         plan = self.orchestrator.decide(text)
         route_context = self.orchestrator.build_context_instruction(plan)
+        enable_tools = plan.route != "direct"
+        if plan.route == "desktop_action":
+            route_context += "\nUse the desktop_action tool to perform the requested action."
 
 
         if text.lower() in ["voice", "voice status", "microphone", "check voice"]:
@@ -873,65 +874,21 @@ class ScratchpadWindow(QMainWindow):
             "screen description",
         ]
         if any(p in text.lower() for p in screen_phrases):
-            ctx = f"### 🖥️ Full Screen Analysis\n\n{describe_current_screen()}"
-            self.add_system_message_to_feed(ctx, is_error=False)
-            # Do NOT return. Let the AI process it.
-            if "route_context" not in locals() and "route_context" not in globals():
-                route_context = ctx
-            else:
-                route_context += f"\n\n{ctx}"
+            enable_tools = True
+            route_context += "\nFor this request, use the describe_current_screen tool to inspect the full screen."
 
 
         if any(p in text.lower() for p in ["active window", "current window", "describe window", "window description", "focused window"]):
-            ctx = f"### 🪟 Active Window Content\n\n{describe_active_window()}"
-            self.add_system_message_to_feed(ctx, is_error=False)
-            # Do NOT return. Let the AI process it.
-            if "route_context" not in locals() and "route_context" not in globals():
-                route_context = ctx
-            else:
-                route_context += f"\n\n{ctx}"
+            enable_tools = True
+            route_context += "\nFor this request, use the describe_active_window tool to inspect the active window."
 
 
         if text.lower() in ["screenshot", "snapshot", "screen capture", "capture screen"]:
-            ctx = f"### 🖥️ Screen Analysis\n\n{describe_current_screen()}"
-            self.add_system_message_to_feed(ctx, is_error=False)
-            # Do NOT return.
+            enable_tools = True
+            route_context += "\nFor this request, use the describe_current_screen tool."
 
         if text.lower().startswith("transcribe ") or "listen" in text.lower():
             self.add_system_message_to_feed(f"Voice capture result: {transcribe_audio_from_microphone(record_seconds=4)}", is_error=False)
-            return
-
-        if plan.route == "desktop_action":
-            self.input_box.clear()
-            lower = text.lower()
-            if any(marker in lower for marker in ["open website", "go to ", "visit ", "open browser"]):
-                target = text
-                if "go to" in lower:
-                    target = text.split("go to", 1)[1].strip()
-                elif "visit" in lower:
-                    target = text.split("visit", 1)[1].strip()
-                elif "open website" in lower:
-                    target = text.split("open website", 1)[1].strip()
-                self.confirm_action(
-                    title="Open website",
-                    prompt=f"Open website: {target}",
-                    details=f"This will launch {target} in the default browser.",
-                    action=lambda: handle_desktop_action(text),
-                )
-                return
-
-            if "open file" in lower or ("open " in lower and "." in lower):
-                target = text.replace("open file", "", 1).replace("open ", "", 1).strip()
-                self.confirm_action(
-                    title="Open file",
-                    prompt=f"Open file: {target}",
-                    details=f"This will launch the file on disk: {target}",
-                    action=lambda: handle_desktop_action(text),
-                )
-                return
-
-            result = handle_desktop_action(text)
-            self.add_system_message_to_feed(f"Desktop action result:\n```\n{result}\n```", is_error=False)
             return
 
         # Auto-create session if none
@@ -941,15 +898,21 @@ class ScratchpadWindow(QMainWindow):
             self.current_session_id = create_session(raw_model_id)
             self.refresh_sidebar()
 
-        if plan.route == "delegate":
+        if plan.route in {"delegate", "desktop_action"}:
             route_note = {"role": "system", "content": route_context}
             if route_note not in self.chat_history:
                 self.chat_history.append(route_note)
                 insert_message(self.current_session_id, "system", route_context)
 
         self.input_box.clear()
+        session_id = self.current_session_id
+        history = [
+            dict(message)
+            for message in self.chat_history
+            if message.get("role") in {"user", "assistant"}
+        ]
 
-        insert_message(self.current_session_id, "user", text)
+        insert_message(session_id, "user", text)
         self.chat_history.append({"role": "user", "content": text})
 
         user_bubble = MessageBubble("user", text)
@@ -958,105 +921,74 @@ class ScratchpadWindow(QMainWindow):
 
         ai_bubble = MessageBubble("assistant", "")
         self.chat_feed_layout.addWidget(ai_bubble)
-        self.current_ai_response_bubble_text_display = ai_bubble.text_display
-        self.current_ai_response_content = ""
-
         QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
 
         selected_model_display_name = self.model_dropdown.currentText()
         selected_model_id = self.reverse_model_name_map.get(selected_model_display_name, selected_model_display_name or "qwen-6gb:latest")
-
-        self.chat_worker = ChatWorker(
+        task_id = str(uuid.uuid4())
+        worker = AgentWorker(
             selected_model_id,
-            self.chat_history,
-            visualizer_state_emitter=self.visualizer_state_emitter,
-            visualizer_glow_emitter=self.visualizer_glow_emitter,
+            text,
+            history,
+            task_id,
+            route_context,
+            self.visualizer_state_emitter,
+            self.visualizer_glow_emitter,
+            enable_tools,
         )
-        self.chat_worker_thread = threading.Thread(target=self.chat_worker.run, daemon=True)
+        self.agent_workers[task_id] = worker
+        self.agent_task_sessions[task_id] = session_id
+        self.agent_response_bubbles[task_id] = ai_bubble
+        worker.state_finished.connect(self.on_agent_finished)
+        worker_thread = threading.Thread(target=worker.run, daemon=True)
+        self.agent_worker_threads[task_id] = worker_thread
+        worker_thread.start()
 
-        self.chat_worker.chunk_received.connect(self.on_chunk)
-        self.chat_worker.finished.connect(self.on_finished)
-        self.chat_worker.error_occurred.connect(self.on_error_occurred)
+    def on_agent_finished(self, state):
+        task_id = state.task_id
+        session_id = self.agent_task_sessions.pop(task_id, None)
+        bubble = self.agent_response_bubbles.pop(task_id, None)
+        self.agent_workers.pop(task_id, None)
+        self.agent_worker_threads.pop(task_id, None)
 
-        self.chat_worker_thread.start()
-
-    def on_chunk(self, chunk: str):
-        self.current_ai_response_content += chunk
-        if self.current_ai_response_bubble_text_display and not sip.isdeleted(self.current_ai_response_bubble_text_display):
-            self.current_ai_response_bubble_text_display.setMarkdown(self.current_ai_response_content)
-            # Find the parent bubble and adjust its height
-            parent_bubble = self.current_ai_response_bubble_text_display.parent()
-            if hasattr(parent_bubble, 'adjust_height'):
-                parent_bubble.adjust_height()
-        QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
-
-
-    def on_finished(self, full_response: str):
-        if self.current_session_id is None:
-            # This should ideally not happen if start_new_chat is called correctly
-            print("Warning: on_finished called with no active session_id.")
+        if state.error:
+            if bubble is not None and not sip.isdeleted(bubble.text_display):
+                bubble.text_display.setMarkdown(f"**Task failed:** {html.escape(state.error)}")
+                bubble.text_display.setProperty("class", "error-bubble")
+                bubble.text_display.setStyleSheet(QSS_STYLES)
             return
-            
-        insert_message(self.current_session_id, "assistant", full_response)
-        self.chat_history.append({"role": "assistant", "content": full_response})
-        
+
+        response = state.final_answer
+        if bubble is not None and not sip.isdeleted(bubble.text_display):
+            bubble.text_display.setMarkdown(response)
+            bubble.adjust_height()
+        if session_id is None:
+            self.on_error_occurred("Session Error", "Unable to save the agent response because the session is unavailable.")
+            return
+
+        insert_message(session_id, "assistant", response)
+        if self.current_session_id == session_id:
+            self.chat_history.append({"role": "assistant", "content": response})
+
         sessions = get_sessions_with_counts()
-        current_session = next((s for s in sessions if s["id"] == self.current_session_id), None)
+        current_session = next((item for item in sessions if item["id"] == session_id), None)
         if current_session and current_session["title"] == "New Chat":
-            if self.chat_history:
-                first_user_message = next((msg["content"] for msg in self.chat_history if msg["role"] == "user"), "")
-                if first_user_message:
-                    title_words = first_user_message.split()[:5] 
-                    new_title = " ".join(title_words).replace("\n", " ")
-                    if len(new_title.strip()) > 0:
-                        update_session_title(self.current_session_id, new_title)
+            user_messages = [
+                message["content"]
+                for message in self.chat_history
+                if message.get("role") == "user"
+            ] if self.current_session_id == session_id else []
+            if user_messages:
+                new_title = " ".join(user_messages[0].split()[:5]).replace("\n", " ")
+                if new_title.strip():
+                    update_session_title(session_id, new_title)
+                    if self.current_session_id == session_id:
                         self.refresh_sidebar()
-
-        resp = full_response
-        read_match = re.search(r'<read>(.*?)</read>', resp, re.DOTALL)
-        if read_match:
-            try:
-                res = read_file(read_match.group(1).strip())
-                self.add_system_message_to_feed(f"Read file result:\n```\n{res}\n```", is_error=False)
-            except Exception as e:
-                self.on_error_occurred("Tool Error", f"Failed to read file: {e}")
-            return
-            
-        search_match = re.search(r'<search>(.*?)</search>', resp, re.DOTALL)
-        if search_match:
-            try:
-                res = ripgrep_search(search_match.group(1).strip())
-                self.add_system_message_to_feed(f"Search result:\n```\n{res}\n```", is_error=False)
-            except Exception as e:
-                self.on_error_occurred("Tool Error", f"Failed to perform search: {e}")
-            return
-            
-        bash_match = re.search(r'<bash>(.*?)</bash>', resp, re.DOTALL)
-        if bash_match:
-            cmd = bash_match.group(1).strip()
-            action_id = str(uuid.uuid4())
-            prompt = execute_bash(action_id, cmd)
-            self.present_approval(action_id, prompt)
-            return
-            
-        write_match = re.search(r'<write path="(.*?)">(.*?)</write>', resp, re.DOTALL)
-        if write_match:
-            path = write_match.group(1).strip()
-            content = write_match.group(2).strip()
-            action_id = str(uuid.uuid4())
-            prompt = write_file(action_id, path, content)
-            self.present_approval(action_id, prompt)
-            return
 
     def on_error_occurred(self, title: str, message: str):
         error_box = ErrorBox(title, message)
         self.chat_feed_layout.addWidget( error_box)
         QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
-        if self.current_ai_response_bubble_text_display:
-            self.current_ai_response_bubble_text_display.setProperty("class", "error-bubble")
-            self.current_ai_response_bubble_text_display.setStyleSheet(QSS_STYLES) 
-
-
     def add_system_message_to_feed(self, system_msg: str, is_error: bool):
         if self.current_session_id is None:
             print("Warning: Attempted to add system message with no active session.")
@@ -1068,70 +1000,12 @@ class ScratchpadWindow(QMainWindow):
         self.chat_feed_layout.addWidget( system_bubble)
         QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
 
-        if not is_error:
-            selected_model_display_name = self.model_dropdown.currentText()
-            selected_model_id = self.reverse_model_name_map.get(selected_model_display_name, selected_model_display_name or "qwen-6gb:latest")
-            
-            ai_bubble = MessageBubble("assistant", "")
-            self.chat_feed_layout.addWidget( ai_bubble)
-            self.current_ai_response_bubble_text_display = ai_bubble.text_display
-            self.current_ai_response_content = ""
-
-            self.chat_worker = ChatWorker(
-                selected_model_id, 
-                self.chat_history, 
-                visualizer_state_emitter=self.visualizer_state_emitter, 
-                visualizer_glow_emitter=self.visualizer_glow_emitter
-            )
-            self.chat_worker_thread = threading.Thread(target=self.chat_worker.run, daemon=True)
-            self.chat_worker.chunk_received.connect(self.on_chunk)
-            self.chat_worker.finished.connect(self.on_finished)
-            self.chat_worker.error_occurred.connect(self.on_error_occurred)
-            self.chat_worker_thread.start()
-
-
-    def confirm_action(self, title: str, prompt: str, details: str, action):
-        from PyQt6.QtWidgets import QDialog
-        
-        kind = "unknown"
-        risk_level = "low"
-        if "bash" in title.lower() or "shell" in title.lower() or "command" in title.lower():
-            risk_level = "high"
-            kind = "bash"
-        elif "write file" in title.lower() or "delete" in title.lower() or "open file" in title.lower():
-            risk_level = "medium"
-            kind = "write"
-        elif "open website" in title.lower():
-            kind = "browser"
-
-        if kind != "unknown" and get_preference(f"allow_{kind}", "false") == "true":
-            try:
-                response = action()
-                self.add_system_message_to_feed(f"Auto-approved. Result:\n```\n{response}\n```", is_error=False)
-            except Exception as exc:
-                self.on_error_occurred("Action Error", f"Failed to complete auto-approved action: {exc}")
-            return
-            
-        dialog = ApprovalDialog(title, prompt, details, risk_level, self)
-        result = dialog.exec()
-
-        if result == QDialog.DialogCode.Accepted:
-            if dialog.is_always_allow_checked() and kind != "unknown":
-                set_preference(f"allow_{kind}", "true")
-                self.add_system_message_to_feed(f"Saved preference: always allow {kind} actions.", is_error=False)
-            try:
-                response = action()
-                self.add_system_message_to_feed(f"Action confirmed. Result:\n```\n{response}\n```", is_error=False)
-            except Exception as exc:
-                self.on_error_occurred("Action Error", f"Failed to complete approved action: {exc}")
-            return
-
-        self.add_system_message_to_feed("Action cancelled by user.", is_error=False)
-
     def on_safe_mode_changed(self, state):
         is_safe = self.safe_mode_checkbox.isChecked()
         set_preference("safe_mode", "true" if is_safe else "false")
         self.orchestrator.safe_mode = is_safe
+        from agent.policy import engine as policy_engine
+        policy_engine.safe_mode = is_safe
         mode_text = "enabled. I will no longer rewrite files or run shell commands without being explicitly commanded as a local tool." if is_safe else "disabled. I now have agentic write/shell permissions again."
         self.add_system_message_to_feed(f"Safe Mode {mode_text}", is_error=False)
 
@@ -1169,107 +1043,121 @@ class ScratchpadWindow(QMainWindow):
 
     @pyqtSlot(AgentEvent)
     def on_agent_event(self, event: AgentEvent):
-        # Update status bar
         if event.type == "LOG":
             msg = event.payload.get("msg", "")
             self.heavy_agent_status_label.setText(f"Status: {msg}")
-            
-        elif event.type == "TASK_STARTED":
+            return
+
+        task_id = event.task_id
+        if event.type == "TASK_STARTED":
             desc = event.payload.get("description", "Unknown Task")
             self.heavy_agent_status_label.setText("Status: Executing Task...")
-            self.current_task_steps = []
-            
-            # Create a dedicated layout widget for the Task Panel
-            from ui.chat_view import MessageBubble
-            self.current_task_bubble = MessageBubble("system", f"<b>Task:</b> {desc}<br><ul></ul>", is_error=False)
-            self.chat_feed_layout.addWidget(self.current_task_bubble)
+            bubble = MessageBubble("system", "", is_error=False)
+            self.task_panels[task_id] = {
+                "bubble": bubble,
+                "description": desc,
+                "steps": [],
+                "status": "running",
+            }
+            self.chat_feed_layout.addWidget(bubble)
+            self._render_task_panel(task_id)
             QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
+            return
 
-        elif event.type in ["TOOL_REQUESTED", "TOOL_FINISHED", "APPROVAL_REQUIRED", "APPROVAL_GRANTED", "APPROVAL_REJECTED"]:
+        panel = self.task_panels.get(task_id)
+        if event.type in {"TOOL_REQUESTED", "TOOL_FINISHED", "APPROVAL_REQUIRED", "APPROVAL_GRANTED", "APPROVAL_REJECTED", "APPROVAL_TIMEOUT"} and panel:
             tool_name = event.payload.get("tool_name", "")
-            
+            steps = panel["steps"]
+
             if event.type == "TOOL_REQUESTED":
-                self.current_task_steps.append({"name": tool_name, "status": "running"})
+                steps.append({"name": tool_name, "status": "running"})
                 self.heavy_agent_status_label.setText(f"Status: Tool Requested -> {tool_name}")
-                
             elif event.type == "TOOL_FINISHED":
                 status = event.payload.get("status", "unknown")
-                for step in reversed(self.current_task_steps):
+                for step in reversed(steps):
                     if step["name"] == tool_name and step["status"] in ["running", "pending_approval"]:
                         step["status"] = "success" if status == "success" else "error"
                         break
-                        
             elif event.type == "APPROVAL_REQUIRED":
-                for step in reversed(self.current_task_steps):
+                for step in reversed(steps):
                     if step["name"] == tool_name and step["status"] == "running":
                         step["status"] = "pending_approval"
                         break
-                        
             elif event.type == "APPROVAL_GRANTED":
-                for step in reversed(self.current_task_steps):
+                for step in reversed(steps):
                     if step["status"] == "pending_approval":
                         step["status"] = "running"
                         break
-                        
-            elif event.type == "APPROVAL_REJECTED":
-                for step in reversed(self.current_task_steps):
+            elif event.type in {"APPROVAL_REJECTED", "APPROVAL_TIMEOUT"}:
+                for step in reversed(steps):
                     if step["status"] == "pending_approval":
                         step["status"] = "error"
                         break
-            
-            # Redraw the task bubble
-            if self.current_task_bubble:
-                html = "<b>Task Progress:</b><br><ul style='list-style-type: none; padding-left: 10px;'>"
-                for step in self.current_task_steps:
-                    icon = "⏳"
-                    if step["status"] == "success": icon = "✅"
-                    elif step["status"] == "error": icon = "❌"
-                    elif step["status"] == "pending_approval": icon = "⚠️"
-                    html += f"<li>{icon} {step['name']}</li>"
-                html += "</ul>"
-                self.current_task_bubble.text_browser.setHtml(html)
+            self._render_task_panel(task_id)
 
         if event.type == "APPROVAL_REQUIRED":
             approval_id = event.payload.get("approval_id")
-            tool_name = event.payload.get("tool_name")
+            tool_name = event.payload.get("tool_name", "")
             reason = event.payload.get("reason", "")
             risk_level = event.payload.get("risk_level", "medium")
             arguments = event.payload.get("arguments", {})
             self.heavy_agent_status_label.setText(f"Status: Waiting for Approval ({tool_name})")
-            
-            from ui.approval_dialog import ApprovalDialog
-            details = repr(arguments)
-            dlg = ApprovalDialog(f"Approval Required: {tool_name}", reason, details, risk_level, parent=self)
-            if dlg.exec():
-                from agent.approvals import manager
-                try:
-                    res = manager.approve(approval_id)
-                except Exception as e:
-                    self.add_system_message_to_feed(f"Failed to execute approved action: {e}", is_error=True)
-            else:
-                from agent.approvals import manager
-                try:
+            if not isinstance(approval_id, str):
+                self.on_error_occurred("Approval Error", "Approval request did not include a valid identifier.")
+                return
+            dlg = ApprovalDialog(
+                f"Approval Required: {tool_name}",
+                reason,
+                repr(arguments),
+                risk_level,
+                parent=self,
+            )
+            from agent.approvals import manager
+            try:
+                if dlg.exec():
+                    manager.approve(approval_id)
+                else:
                     manager.reject(approval_id)
-                except:
-                    pass
-
+            except (KeyError, ValueError) as error:
+                self.add_system_message_to_feed(f"Approval request could not be resolved: {error}", is_error=True)
         elif event.type == "TASK_COMPLETED":
             self.heavy_agent_status_label.setText("Status: Task Completed")
-            res = event.payload.get("result", "")
-            if res:
-                self.add_system_message_to_feed(res, is_error=False)
-            self.current_task_bubble = None
-
+            if panel:
+                panel["status"] = "completed"
+                self._render_task_panel(task_id)
         elif event.type == "TASK_FAILED":
             err = event.payload.get("error", "Unknown error")
-            self.heavy_agent_status_label.setText(f"Status: Task Failed")
-            self.add_system_message_to_feed(f"Task Failed: {err}", is_error=True)
-            self.current_task_bubble = None
+            self.heavy_agent_status_label.setText("Status: Task Failed")
+            if panel:
+                panel["status"] = "failed"
+                panel["error"] = err
+                self._render_task_panel(task_id)
 
+    def _render_task_panel(self, task_id: str):
+        panel = self.task_panels.get(task_id)
+        if not panel or sip.isdeleted(panel["bubble"]):
+            return
 
-            err = event.payload.get("error", "Unknown error")
-            self.heavy_agent_status_label.setText(f"Status: Task Failed")
-            self.add_system_message_to_feed(f"Task Failed: {err}", is_error=True)
+        status = html.escape(panel["status"])
+        description = html.escape(str(panel["description"]))
+        rendered = [f"<b>Task ({status}):</b> {description}<ul style='list-style-type:none;padding-left:10px;'>"]
+        for step in panel["steps"]:
+            icon = {
+                "success": "✅",
+                "error": "❌",
+                "pending_approval": "⚠️",
+            }.get(step["status"], "⏳")
+            rendered.append(f"<li>{icon} {html.escape(str(step['name']))}</li>")
+        if panel.get("error"):
+            rendered.append(f"<li>❌ {html.escape(str(panel['error']))}</li>")
+        rendered.append("</ul>")
+        panel["bubble"].text_display.setHtml("".join(rendered))
+
+    def closeEvent(self, event):
+        for worker in tuple(self.agent_workers.values()):
+            worker.cancel()
+        self.agent_listener.close()
+        super().closeEvent(event)
 
     @pyqtSlot()
     def finish_voice_capture_sig(self):
