@@ -557,7 +557,7 @@ class ScratchpadWindow(QMainWindow):
         # Move scroll area into splitter
         self.chat_splitter.addWidget(self.chat_feed_scroll_area)
         
-        # Terminal Drawer
+# Terminal Drawer - Agent Workspace (contextual, shows when tasks run)
         self.terminal_drawer = QWidget()
         self.terminal_drawer.setMinimumHeight(40)
         self.terminal_drawer.setStyleSheet("background-color: #1e1e2e; border-top: 1px solid #313244;")
@@ -565,7 +565,7 @@ class ScratchpadWindow(QMainWindow):
         terminal_layout.setContentsMargins(0, 0, 0, 0)
         terminal_layout.setSpacing(0)
         
-        self.terminal_toggle_btn = QPushButton("▼ Heavy Agent Logs")
+        self.terminal_toggle_btn = QPushButton("▼ Agent Workspace")
         self.terminal_toggle_btn.setStyleSheet("text-align: left; padding: 5px; background: #313244; color: #cdd6f4; border: none;")
         self.terminal_toggle_btn.clicked.connect(self.toggle_terminal_drawer)
         terminal_layout.addWidget(self.terminal_toggle_btn)
@@ -578,11 +578,8 @@ class ScratchpadWindow(QMainWindow):
         self.chat_splitter.addWidget(self.terminal_drawer)
         self.chat_splitter.setSizes([800, 40]) # Default closed size
         
-        chat_layout.addWidget(self.chat_splitter, stretch=1)
-        
-        # Polling timer for heavy agent logs
-        from PyQt6.QtCore import QTimer
-        self.last_log_size = 0
+        # Task tracking for auto-show/hide workspace
+        self._active_task_count = 0
 
         
         # Input Bar
@@ -1194,6 +1191,8 @@ class ScratchpadWindow(QMainWindow):
         if event.type == "LOG":
             msg = event.payload.get("msg", "")
             self.heavy_agent_status_label.setText(f"Status: {msg}")
+            # Also append to terminal workspace
+            self._append_to_workspace(msg)
             return
 
         task_id = event.task_id
@@ -1210,6 +1209,11 @@ class ScratchpadWindow(QMainWindow):
             self.chat_feed_layout.addWidget(bubble)
             self._render_task_panel(task_id)
             QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
+            
+            # Increment active task count and show workspace
+            self._active_task_count += 1
+            self._update_workspace_visibility()
+            self._append_to_workspace(f"[Task Started] {desc}")
             return
 
         panel = self.task_panels.get(task_id)
@@ -1300,6 +1304,10 @@ class ScratchpadWindow(QMainWindow):
             if panel:
                 panel["status"] = "completed"
                 self._render_task_panel(task_id)
+            # Decrement active task count and update workspace
+            self._active_task_count = max(0, self._active_task_count - 1)
+            self._update_workspace_visibility()
+            self._append_to_workspace("[Task Completed]")
         elif event.type == "TASK_FAILED":
             err = event.payload.get("error", "Unknown error")
             self.heavy_agent_status_label.setText("Status: Task Failed")
@@ -1307,6 +1315,10 @@ class ScratchpadWindow(QMainWindow):
                 panel["status"] = "failed"
                 panel["error"] = err
                 self._render_task_panel(task_id)
+            # Decrement active task count and update workspace
+            self._active_task_count = max(0, self._active_task_count - 1)
+            self._update_workspace_visibility()
+            self._append_to_workspace(f"[Task Failed] {err}")
 
     def _render_task_panel(self, task_id: str):
         panel = self.task_panels.get(task_id)
@@ -1576,7 +1588,28 @@ class ScratchpadWindow(QMainWindow):
     def toggle_terminal_drawer(self):
         visible = not self.terminal_text_area.isVisible()
         self.terminal_text_area.setVisible(visible)
-        self.terminal_toggle_btn.setText("▼ Heavy Agent Logs" if visible else "▶ Heavy Agent Logs")
+        self.terminal_toggle_btn.setText("▼ Agent Workspace" if visible else "▶ Agent Workspace")
+
+    def _update_workspace_visibility(self):
+        """Auto-show workspace when tasks are running, hide when idle."""
+        if self._active_task_count > 0:
+            if not self.terminal_text_area.isVisible():
+                self.terminal_text_area.setVisible(True)
+                self.terminal_toggle_btn.setText("▼ Agent Workspace")
+        else:
+            # Keep user's manual toggle preference when idle
+            pass
+
+    def _append_to_workspace(self, text: str):
+        """Append a log line to the Agent Workspace."""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        current = self.terminal_text_area.toPlainText()
+        new_text = f"{current}\n[{timestamp}] {text}" if current else f"[{timestamp}] {text}"
+        self.terminal_text_area.setPlainText(new_text)
+        # Auto-scroll to bottom
+        scrollbar = self.terminal_text_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     # --- Trust & Safety Panel ---
     def _create_trust_safety_panel(self):

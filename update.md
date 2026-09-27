@@ -1,5 +1,30 @@
 # Update Log
 
+## Phase 3 Fix: Replace Heavy Agent Logs with Contextual Agent Workspace (Completed - 2026-09-27)
+
+**Problem**: The permanent "Heavy Agent Logs" panel was always visible at the bottom of the chat, taking up space even when no tasks were running. It also wasn't populated with actual logs (the polling timer was never implemented).
+
+**Fix Applied**:
+1. **`ui/main_window.py`** - Renamed and contextualized the workspace:
+   - Renamed "Heavy Agent Logs" → "Agent Workspace" 
+   - Added `_active_task_count` tracking
+   - Auto-shows workspace when tasks start (`TASK_STARTED`)
+   - Auto-hides when all tasks complete (`TASK_COMPLETED`/`TASK_FAILED`)
+   - Manual toggle still available for user preference
+   - Added `_append_to_workspace()` to populate logs with timestamps
+   - LOG events from AgentRuntime now appear in workspace
+
+2. **Behavior**:
+   - Idle: Workspace hidden (or user's manual toggle preference)
+   - Task running: Workspace auto-opens, shows task progress
+   - Task complete: Workspace stays open for review, hides on next idle
+
+**Result**: Contextual workspace that appears only when relevant, showing task-specific execution logs.
+
+**Tests**: All 99 tests pass.
+
+---
+
 ## Phase 2 Fix: Conversation-Model vs Execution-Model Separation (Completed - 2026-09-27)
 
 **Problem**: Model boundary was duplicated in two places:
