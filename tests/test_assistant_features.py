@@ -2,7 +2,7 @@ import unittest
 
 from PyQt6.QtWidgets import QApplication
 
-from ui_scratchpad import ScratchpadWindow
+from ui.main_window import ScratchpadWindow
 from tools.browser import (
     build_approval_message,
     capture_screen_snapshot,

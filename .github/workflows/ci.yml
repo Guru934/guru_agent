@@ -13,6 +13,9 @@ jobs:
     steps:
     - uses: actions/checkout@v3
 
+    - name: Install system dependencies for PyQt6
+      run: sudo apt-get update && sudo apt-get install -y libegl1 libxcb-cursor0 libxkbcommon-x11-0 xvfb
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
@@ -25,5 +28,7 @@ jobs:
         pip install pytest
 
     - name: Run tests
+      env:
+        PYTHONPATH: .
       run: |
-        pytest
+        xvfb-run pytest

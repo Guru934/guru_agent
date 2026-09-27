@@ -1,6 +1,6 @@
 import unittest
 
-from agent.policy import AgentOrchestrator
+from agent.planner import AgentOrchestrator
 
 
 class AgentOrchestratorTests(unittest.TestCase):
