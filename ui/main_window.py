@@ -340,8 +340,8 @@ class ScratchpadWindow(QMainWindow):
         self.visualizer_state_emitter = visualizer_state_emitter
         self.visualizer_glow_emitter = visualizer_glow_emitter
 
-        self.setWindowTitle("AI Workspace")
-        self.setObjectName("cat-talker-workspace")
+        self.setWindowTitle("Guru Agent")
+        self.setObjectName("guru-agent-workspace")
 
         screen = QApplication.primaryScreen()
         if screen is not None:
@@ -649,6 +649,13 @@ class ScratchpadWindow(QMainWindow):
                     break
         else:
             self.current_session_id = None
+        
+        # Auto-create a session if none exists (needed for system messages to display)
+        if self.current_session_id is None:
+            selected_model_display_name = self.model_dropdown.currentText()
+            raw_model_id = self.reverse_model_name_map.get(selected_model_display_name, selected_model_display_name or "qwen-6gb:latest")
+            self.current_session_id = create_session(raw_model_id)
+            self.refresh_sidebar()
             
 
 
@@ -906,6 +913,7 @@ class ScratchpadWindow(QMainWindow):
         # If voice assistant is active, route to Gemini Live
         if self.voice_assistant_active and self.live_agent:
             self.live_agent.is_recording = True
+            self.live_agent.set_mic_muted(False)  # Unmute mic for push-to-talk
             self.set_voice_button_state("recording")
             self.voice_in_progress = True
             return
@@ -960,6 +968,7 @@ class ScratchpadWindow(QMainWindow):
         # If voice assistant is active, route to Gemini Live
         if self.voice_assistant_active and self.live_agent:
             self.live_agent.is_recording = False
+            self.live_agent.set_mic_muted(True)  # Mute mic when released
             self.set_voice_button_state("idle")
             self.voice_in_progress = False
             return

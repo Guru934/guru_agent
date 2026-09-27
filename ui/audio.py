@@ -22,7 +22,7 @@ except Exception:
 # --------------------------------------------------------------------------
 
 class AudioInterface:
-    def __init__(self):
+    def __init__(self, mic_mute_event: threading.Event = None):
         self.pyaudio = pyaudio.PyAudio()
         self.audio_in_queue = asyncio.Queue()
         self.audio_out_queue = queue.Queue()
@@ -34,6 +34,10 @@ class AudioInterface:
         self._running = True
         self._loop_closed = False
         self._closed = False
+        
+        # Use provided event or create internal one for backward compatibility
+        self._mic_mute_event = mic_mute_event or threading.Event()
+        self._mic_mute_event.set()  # Default to muted (push-to-talk)
 
         self.in_stream = self.pyaudio.open(
             format=pyaudio.paInt16,
@@ -61,10 +65,13 @@ class AudioInterface:
         if not self._running or self._loop_closed:
             return (None, pyaudio.paComplete)
         try:
-            if not self.is_playing:
+            # Only send audio if not muted AND not playing output
+            mic_muted = self._mic_mute_event.is_set()
+            if not mic_muted and not self.is_playing:
                 self.mic_active = True
                 self.loop.call_soon_threadsafe(self.audio_in_queue.put_nowait, in_data)
             else:
+                # Send silence when muted or playing output
                 silence = b'\x00' * len(in_data)
                 self.loop.call_soon_threadsafe(self.audio_in_queue.put_nowait, silence)
         except (RuntimeError, AttributeError):

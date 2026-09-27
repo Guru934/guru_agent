@@ -157,6 +157,18 @@ class GeminiDesktopAgent:
         # Connection state
         self._connection_state = "disconnected"  # disconnected, connecting, connected, reconnecting, error
         self._state_callback_ref = None
+        
+        # Push-to-talk microphone control (thread-safe)
+        self._mic_mute_event = threading.Event()
+        self._mic_mute_event.set()  # Start muted (push-to-talk: hold to talk)
+        
+    def set_mic_muted(self, muted: bool):
+        """Thread-safe microphone mute control for push-to-talk."""
+        if muted:
+            self._mic_mute_event.set()
+        else:
+            self._mic_mute_event.clear()
+        logger.debug(f"Push-to-talk: mic {'muted' if muted else 'unmuted'}")
         self._glow_callback_ref = None
         self._active_session = None  # Reference to active Live session for event injection
         
@@ -199,7 +211,8 @@ class GeminiDesktopAgent:
                        state_callback=None, bubble_callback=None, glow_callback=None):
         self.loop = asyncio.get_running_loop()
         self.synthetic_input_queue = asyncio.Queue()
-        self.audio = AudioInterface()
+        # Pass the mic mute event to AudioInterface for push-to-talk
+        self.audio = AudioInterface(mic_mute_event=self._mic_mute_event)
         self.audio.volume_cb = volume_callback
         
         self.vision = VisionInterface()

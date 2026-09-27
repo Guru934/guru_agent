@@ -2,6 +2,7 @@ import os
 import sys
 
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
 from ui.main_window import ScratchpadWindow
 from ui.widgets import DummyVisualizerEmitter
 
@@ -44,13 +45,16 @@ def main():
 
     try:
         app = QApplication(sys.argv)
-        app.setApplicationName("cat-talker-overlay")
-        app.setDesktopFileName("cat-talker-overlay")
+        app.setApplicationName("guru-agent")
+        app.setDesktopFileName("guru-agent")
         dummy_emitter = DummyVisualizerEmitter()
         window = ScratchpadWindow(
             visualizer_state_emitter=dummy_emitter.state_signal,
             visualizer_glow_emitter=dummy_emitter.glow_signal,
         )
+        # Ensure window behaves as a normal tiled window in Hyprland
+        window.setWindowFlag(Qt.WindowType.Window, True)
+        window.setWindowFlag(Qt.WindowType.FramelessWindowHint, False)
         window.show()
         window.move(40, 40)
         window.raise_()
