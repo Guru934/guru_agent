@@ -675,7 +675,7 @@ class GeminiDesktopAgent:
 def start_agent_in_thread(volume_cb, quit_cb=None, text_cb=None, state_cb=None, bubble_cb=None, glow_cb=None, global_agent_ref=None, assistant_bridge=None):
     agent = GeminiDesktopAgent(assistant_bridge=assistant_bridge)
     if global_agent_ref is not None:
-        global_agent_ref.append(agent)
+        global_agent_ref[0] = agent  # Store agent at index 0
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

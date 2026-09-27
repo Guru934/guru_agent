@@ -921,9 +921,6 @@ class ScratchpadWindow(QMainWindow):
         plan = self.orchestrator.decide(text)
         route_context = self.orchestrator.build_context_instruction(plan)
         enable_tools = plan.route != "direct"
-        if plan.route == "desktop_action":
-            route_context += "\nUse the desktop_action tool to perform the requested action."
-
 
         if text.lower() in ["voice", "voice status", "microphone", "check voice"]:
             self.add_system_message_to_feed(voice_input_status(), is_error=False)
@@ -1324,6 +1321,9 @@ class ScratchpadWindow(QMainWindow):
             from providers.gemini_live import start_agent_in_thread
             import asyncio
             
+            # We need to capture the agent instance - poll for it
+            global_agent_ref = [None]
+            
             def run_live_agent():
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -1335,7 +1335,7 @@ class ScratchpadWindow(QMainWindow):
                         bubble_cb=self._on_live_bubble,
                         glow_cb=self._on_live_glow,
                         assistant_bridge=self.assistant_bridge,
-                        global_agent_ref=[None],  # We'll capture the agent instance
+                        global_agent_ref=global_agent_ref,
                     )
                 except Exception as e:
                     logger = get_logger("ui")
@@ -1343,17 +1343,15 @@ class ScratchpadWindow(QMainWindow):
                 finally:
                     loop.close()
             
-            self.live_agent_thread = threading.Thread(target=run_live_agent, daemon=True)
-            self.live_agent_thread.start()
-            
-            # We need to capture the agent instance - poll for it
             def capture_agent():
-                if self.assistant_bridge._gemini_live_ref:
-                    self.live_agent = self.assistant_bridge._gemini_live_ref
+                if global_agent_ref[0] is not None:
+                    self.live_agent = global_agent_ref[0]
                     self._update_connection_state(self.live_agent.get_connection_state())
                 else:
                     QTimer.singleShot(500, capture_agent)
             
+            self.live_agent_thread = threading.Thread(target=run_live_agent, daemon=True)
+            self.live_agent_thread.start()
             QTimer.singleShot(500, capture_agent)
             self.add_system_message_to_feed("Starting voice assistant...", is_error=False)
 

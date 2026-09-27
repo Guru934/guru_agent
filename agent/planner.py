@@ -7,11 +7,13 @@ import re
 
 from agent.state import OrchestrationPlan
 
+
 class AgentOrchestrator:
     """Small orchestration layer to route user requests.
 
     - direct: answer directly with the current model
     - delegate: request tool / agent execution for file/search/shell work
+    - desktop_action: direct desktop control via granular tools
     """
 
     def __init__(self, default_model: str = "qwen2.5-coder", safe_mode: bool = False):
@@ -23,9 +25,12 @@ class AgentOrchestrator:
             return "You are acting as a personal assistant. Keep the answer concise, practical, and helpful."
 
         if plan.route == "desktop_action":
+            tool_hint = ", ".join(plan.tool_calls) if plan.tool_calls else "desktop control"
             return (
-                "You are acting as the desktop assistant. Perform the requested local desktop action directly, "
-                "such as opening a website, app, media, or controlling system settings. Keep it fast and minimal."
+                f"You are acting as the desktop assistant. Perform the requested local desktop action directly "
+                f"using the available tools: {tool_hint}. "
+                f"Choose the appropriate tool: open_application, open_website, set_volume, set_brightness, "
+                f"get_clipboard, search_and_play_youtube. Keep it fast and minimal."
             )
 
         tool_hint = ", ".join(plan.tool_calls) if plan.tool_calls else "general agent work"
@@ -43,16 +48,35 @@ class AgentOrchestrator:
 
         lowered = text.lower()
 
+        # Desktop action keywords - route to granular desktop tools
         if any(keyword in lowered for keyword in [
             "open youtube", "play music", "open website", "open chrome", "launch", "open app",
             "set volume", "volume", "brightness", "mute", "open browser", "search youtube",
-            "play a song", "play music", "open vscode", "open terminal", "start app"
+            "play a song", "play music", "open vscode", "open terminal", "start app",
+            "open ", "youtube", "spotify", "netflix", "github", "google",
         ]):
+            tool_calls = []
+            # Determine which granular tools are likely needed
+            if any(k in lowered for k in ["open youtube", "search youtube", "play music", "youtube", "spotify"]):
+                tool_calls.append("search_and_play_youtube")
+            if any(k in lowered for k in ["open website", "open browser", "visit ", "go to ", "github", "google"]):
+                tool_calls.append("open_website")
+            if any(k in lowered for k in ["open chrome", "launch", "open app", "open vscode", "open terminal", "start app", "open code"]):
+                tool_calls.append("open_application")
+            if any(k in lowered for k in ["set volume", "volume", "mute"]):
+                tool_calls.append("set_volume")
+            if "brightness" in lowered:
+                tool_calls.append("set_brightness")
+            
+            # If no specific tool matched but it's a desktop action, include all
+            if not tool_calls:
+                tool_calls = ["open_application", "open_website", "search_and_play_youtube", "set_volume", "set_brightness"]
+            
             return OrchestrationPlan(
                 route="desktop_action",
                 preferred_model=self.default_model,
-                tool_calls=["desktop_control"],
-                reason="This is a direct desktop or media action and should not trigger the heavier agent workflow.",
+                tool_calls=tool_calls,
+                reason="This is a direct desktop or media action and should use granular desktop tools.",
             )
 
         if any(keyword in lowered for keyword in [
@@ -99,7 +123,6 @@ class AgentOrchestrator:
             tool_calls=[],
             reason="Task likely needs reasoning or tool usage.",
         )
-
     def _choose_model_for_task(self, text: str) -> str:
         if any(keyword in text for keyword in ["latest", "trend", "news", "research", "market", "current", "summarize recent", "world"]):
             return "gemini-2.5-flash"
