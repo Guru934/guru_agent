@@ -2,7 +2,9 @@ import asyncio
 import random
 import json
 import threading
+import os
 from typing import Optional, Callable, Any
+from dotenv import load_dotenv
 
 from google import genai
 from google.genai import types
@@ -15,6 +17,9 @@ from agent.assistant_bridge import AssistantBridge
 from agent.assistant_events import AssistantEvent
 
 logger = get_logger("cat_talker.agent")
+
+# Load environment variables from .env file
+load_dotenv()
 
 # --- MONKEY PATCH WEBSOCKETS TO DISABLE PING TIMEOUTS FOR STRICT PROXIES ---
 import websockets.asyncio.client
@@ -127,7 +132,7 @@ LIVE_TOOL_DECLARATIONS = [
 
 class GeminiDesktopAgent:
     def __init__(self, assistant_bridge: Optional[AssistantBridge] = None):
-        self.client = genai.Client()
+        self.client = None  # Deferred to run_loop for proper error handling
         self.audio = None
         self.vision = None
         self.stop_event = asyncio.Event()
@@ -151,6 +156,7 @@ class GeminiDesktopAgent:
         self._connection_state = "disconnected"  # disconnected, connecting, connected, reconnecting, error
         self._state_callback_ref = None
         self._glow_callback_ref = None
+        self._active_session = None  # Reference to active Live session for event injection
         
         if assistant_bridge:
             assistant_bridge.set_gemini_live_ref(self)
@@ -203,6 +209,18 @@ class GeminiDesktopAgent:
         # Build system instructions with tool availability
         system_instructions = self._build_system_instructions()
 
+        # Create client here for proper error handling
+        try:
+            self.client = genai.Client()
+        except Exception as e:
+            logger.error(f"Failed to create Gemini client: {e}", exc_info=True)
+            self._set_connection_state("error")
+            if text_callback:
+                text_callback("system", f"Failed to initialize Gemini client: {e}")
+            if app_quit_callback:
+                app_quit_callback()
+            return
+
         try:
             while not self.stop_event.is_set():
                 try:
@@ -215,6 +233,7 @@ class GeminiDesktopAgent:
 
                     self._force_reconnect = False
                     async with self.client.aio.live.connect(model=self.current_model, config=config) as session:
+                        self._active_session = session  # Store reference for event injection
                         logger.info("====================================")
                         logger.info("✅ Session established securely!")
                         logger.info("🎙️ Speak into your microphone now...")
@@ -362,6 +381,9 @@ class GeminiDesktopAgent:
                         for task in pending:
                             task.cancel()
 
+                    # Clear active session reference when session ends
+                    self._active_session = None
+
                 except Exception as e:
                     err_str = str(e)
                     logger.error(f"Agent connection dropped (auto-reconnecting): {e}", exc_info=True)
@@ -459,7 +481,8 @@ class GeminiDesktopAgent:
                 # Send function response back to Gemini Live
                 async with send_lock:
                     try:
-                        response = types.LiveClientToolResponse(
+                        # Use the current SDK method: send_tool_response
+                        await session.send_tool_response(
                             function_responses=[
                                 types.FunctionResponse(
                                     name=name,
@@ -468,19 +491,30 @@ class GeminiDesktopAgent:
                                 )
                             ]
                         )
-                        await session.send_client_tool_response(response)
                     except AttributeError:
                         # Fallback for older API versions
-                        req = types.LiveClientContent(
-                            turns=[types.Content(role="user", parts=[types.Part(text=f"Tool {name} result: {json.dumps(result)}")])]
-                        )
-                        await session.send_client_content(req)
-                        
+                        try:
+                            response = types.LiveClientToolResponse(
+                                function_responses=[
+                                    types.FunctionResponse(
+                                        name=name,
+                                        response=result,
+                                        id=call_id,
+                                    )
+                                ]
+                            )
+                            await session.send_client_tool_response(response)
+                        except AttributeError:
+                            req = types.LiveClientContent(
+                                turns=[types.Content(role="user", parts=[types.Part(text=f"Tool {name} result: {json.dumps(result)}")])]
+                            )
+                            await session.send_client_content(req)
+                            
             except Exception as e:
                 logger.error(f"Tool call {name} error: {e}", exc_info=True)
                 async with send_lock:
                     try:
-                        response = types.LiveClientToolResponse(
+                        await session.send_tool_response(
                             function_responses=[
                                 types.FunctionResponse(
                                     name=name,
@@ -489,9 +523,20 @@ class GeminiDesktopAgent:
                                 )
                             ]
                         )
-                        await session.send_client_tool_response(response)
                     except AttributeError:
-                        pass
+                        try:
+                            response = types.LiveClientToolResponse(
+                                function_responses=[
+                                    types.FunctionResponse(
+                                        name=name,
+                                        response={"error": str(e)},
+                                        id=call_id,
+                                    )
+                                ]
+                            )
+                            await session.send_client_tool_response(response)
+                        except AttributeError:
+                            pass
 
     async def _delegate_to_agent(self, args: dict) -> dict:
         """Delegate a task to the execution agent."""
@@ -502,7 +547,12 @@ class GeminiDesktopAgent:
         if not task_description:
             return {"error": "task_description is required"}
         
-        task_id = self.assistant_bridge.delegate_task(task_description)
+        # Pass current model and context for better delegation
+        task_id = self.assistant_bridge.delegate_task(
+            task_description,
+            model_id=self.current_model,
+            # Could also pass history/context if available
+        )
         return {"task_id": task_id, "message": f"Delegated task: {task_description}"}
 
     async def _get_agent_status(self, args: dict) -> dict:
@@ -615,11 +665,8 @@ class GeminiDesktopAgent:
 
     async def _inject_system_message_to_session(self, message: str):
         """Inject system message to current session - called from event loop."""
-        # This is called from the event loop, we need to access the current session
-        # The session is only available within the run_loop context
-        # For now, we'll queue it to be sent when the session is available
-        # In practice, this gets called during an active session
-        pass
+        if self._active_session:
+            await self._inject_system_message(self._active_session, message)
 
     def get_connection_state(self) -> str:
         return self._connection_state

@@ -153,6 +153,8 @@ class AssistantBridge:
                         "result_summary": task.result_summary,
                         "completed_at": datetime.now().isoformat(),
                     })
+                    # Remove from active tasks
+                    del self.active_tasks[task_id]
             self._emit_assistant_event(AssistantEvent(
                 type="task_completed",
                 task_id=task_id,
@@ -175,6 +177,8 @@ class AssistantBridge:
                         "error": error,
                         "completed_at": datetime.now().isoformat(),
                     })
+                    # Remove from active tasks
+                    del self.active_tasks[task_id]
             self._emit_assistant_event(AssistantEvent(
                 type="task_failed",
                 task_id=task_id,
@@ -195,7 +199,10 @@ class AssistantBridge:
     def set_gemini_live_ref(self, gemini_live_agent):
         self._gemini_live_ref = gemini_live_agent
 
-    def delegate_task(self, description: str) -> str:
+    def delegate_task(self, description: str, model_id: Optional[str] = None, 
+                        history: Optional[List[Dict[str, str]]] = None,
+                        system_instruction: Optional[str] = None,
+                        source: str = "gemini_live") -> str:
         task_id = str(uuid.uuid4())
         task_summary = TaskSummary(task_id, description)
         
@@ -204,11 +211,14 @@ class AssistantBridge:
         
         def run_task():
             try:
-                runtime = AgentRuntime()
+                runtime = AgentRuntime(model_id=model_id or "gemini-2.5-flash")
                 runtime.run(
                     request=description,
                     task_id=task_id,
                     cancellation_event=task_summary.cancellation_event,
+                    history=history,
+                    system_instruction=system_instruction,
+                    enable_tools=True,
                 )
             except Exception as e:
                 emit("LOG", task_id, {"msg": f"Task execution error: {e}"})

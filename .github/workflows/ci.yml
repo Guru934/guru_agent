@@ -14,7 +14,7 @@ jobs:
     - uses: actions/checkout@v3
 
     - name: Install system dependencies for PyQt6
-      run: sudo apt-get update && sudo apt-get install -y libegl1 libxcb-cursor0 libxkbcommon-x11-0 portaudio19-dev xvfb
+      run: sudo apt-get update && sudo apt-get install -y libegl1 libxcb-cursor0 libxkbcommon-x11-0 portaudio19-dev xvfb ripgrep
 
     - name: Set up Python
       uses: actions/setup-python@v4
