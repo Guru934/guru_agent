@@ -84,6 +84,15 @@ class GeminiAgentSession:
             history=history_contents,
         )
 
+    def close(self):
+        """Close the underlying client to release resources."""
+        if hasattr(self, 'client') and self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            self.client = None
+
     @staticmethod
     def _normalize(response: Any) -> AgentResponse:
         calls = [
@@ -180,8 +189,13 @@ class OllamaAgentSession:
         return self._request()
 
     def close(self):
+<<<<<<< HEAD
         """Ollama uses per-request HTTP connections managed by requests."""
         return None
+=======
+        """No-op for Ollama - no persistent client to close."""
+        pass
+>>>>>>> d67eaab (Fix critical issues from code review)
 
 
 def create_agent_session(

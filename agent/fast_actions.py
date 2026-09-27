@@ -105,6 +105,18 @@ def resolve_fast_action(text: str):
         if query:
             return FastAction("search_and_play_youtube", {"query": query})
 
+    # "search and play X on YouTube" or "search YouTube for X" or "play X on YouTube"
+    yt_search_match = re.match(
+        r"^(?:search(?: and play)?|find|look up|look for)\s+(.+?)(?:\s+on\s+youtube|\s+youtube)?$",
+        normalized
+    )
+    if yt_search_match and ("youtube" in normalized or "yt" in normalized):
+        query = yt_search_match.group(1).strip()
+        query = re.sub(r"\s+on\s+youtube$", "", query).strip()
+        query = re.sub(r"\s+youtube$", "", query).strip()
+        if query:
+            return FastAction("search_and_play_youtube", {"query": query})
+
     # Known websites.
     open_match = re.match(r"^(?:open|visit|go to|navigate to)\s+(.+)$", normalized)
     if open_match:
