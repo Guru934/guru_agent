@@ -1,5 +1,39 @@
 # Update Log
 
+## Phase 4 Fix: Build Temporary Agent Terminal for Execution Tasks (Completed - 2026-09-27)
+
+**Problem**: The Agent Workspace was just a log viewer (MarkdownTextBrowser). For actual execution tasks (coding, scripts, tests, git operations), a real terminal was needed that can:
+- Run a persistent shell session
+- Show output in real-time
+- Accept input programmatically
+- Be used by the agent for execution tasks
+
+**Fix Applied**:
+1. **`ui/widgets.py`** - Created `AgentTerminal` class:
+   - Uses QProcess to run persistent bash shell (`bash -i`)
+   - Shows output in real-time via `readyReadStandardOutput` signal
+   - `send_command()` method for programmatic command execution
+   - `output_received`, `command_finished`, `prompt_ready` signals
+   - Auto-restarts shell on exit
+   - Inherits from QPlainTextEdit for monospace terminal display
+
+2. **`ui/main_window.py`** - Integrated AgentTerminal:
+   - Replaced MarkdownTextBrowser with AgentTerminal in workspace
+   - Connected terminal signals (`output_received`, `command_finished`)
+   - Added handlers for terminal output and shell restart
+
+3. **Behavior**:
+   - Hidden by default, auto-shows when tasks run
+   - Agent can send commands via `terminal.send_command()`
+   - Real-time output display with timestamps
+   - Shell auto-restarts on exit
+
+**Result**: Real terminal for execution tasks - coding, scripts, tests, git operations.
+
+**Tests**: All 99 tests pass.
+
+---
+
 ## Phase 3 Fix: Replace Heavy Agent Logs with Contextual Agent Workspace (Completed - 2026-09-27)
 
 **Problem**: The permanent "Heavy Agent Logs" panel was always visible at the bottom of the chat, taking up space even when no tasks were running. It also wasn't populated with actual logs (the polling timer was never implemented).

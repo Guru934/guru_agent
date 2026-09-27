@@ -31,7 +31,7 @@ from tools.browser import (
 from utils import get_logger
 from memory.sqlite import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
 from providers import get_installed_models
-from ui.widgets import AutoResizingTextEdit, MarkdownTextBrowser, SessionRowWidget, DummyVisualizerEmitter, MessageBubble
+from ui.widgets import AutoResizingTextEdit, MarkdownTextBrowser, SessionRowWidget, DummyVisualizerEmitter, MessageBubble, AgentTerminal
 from ui.chat_view import AgentWorker, TranscriptionWorker
 from ui.approval_dialog import ApprovalDialog
 from agent.capabilities import registry as capability_registry, CapabilityGrant
@@ -570,10 +570,14 @@ class ScratchpadWindow(QMainWindow):
         self.terminal_toggle_btn.clicked.connect(self.toggle_terminal_drawer)
         terminal_layout.addWidget(self.terminal_toggle_btn)
         
-        self.terminal_text_area = MarkdownTextBrowser()
-        self.terminal_text_area.setStyleSheet("background-color: #11111b; color: #a6adc8; padding: 5px; font-family: monospace;")
+        self.terminal_text_area = AgentTerminal()
+        self.terminal_text_area.setStyleSheet("background-color: #1a1b26; color: #a6adc8; padding: 5px; font-family: monospace;")
         self.terminal_text_area.hide()
         terminal_layout.addWidget(self.terminal_text_area)
+        
+        # Connect terminal signals
+        self.terminal_text_area.output_received.connect(self._on_terminal_output)
+        self.terminal_text_area.command_finished.connect(self._on_terminal_finished)
         
         self.chat_splitter.addWidget(self.terminal_drawer)
         self.chat_splitter.setSizes([800, 40]) # Default closed size
@@ -1610,6 +1614,17 @@ class ScratchpadWindow(QMainWindow):
         # Auto-scroll to bottom
         scrollbar = self.terminal_text_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _on_terminal_output(self, text: str):
+        """Handle output from AgentTerminal."""
+        # Could log or process terminal output here
+        pass
+
+    def _on_terminal_finished(self, exit_code: int):
+        """Handle terminal shell exit."""
+        self._append_to_workspace(f"[Terminal shell exited with code {exit_code}]")
+        # Restart shell
+        self.terminal_text_area._start_shell()
 
     # --- Trust & Safety Panel ---
     def _create_trust_safety_panel(self):

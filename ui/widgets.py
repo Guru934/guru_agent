@@ -12,9 +12,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QListWidgetItem, QSplitter, QLabel,
     QScrollArea, QSizePolicy, QFrame, QApplication,
     QMessageBox, QSpacerItem, QStyleFactory, QToolButton, QDialog, QCheckBox,
-    QGridLayout, QStyle
+    QGridLayout, QStyle, QPlainTextEdit
 )
-from PyQt6.QtCore import QThread, Qt, pyqtSignal, QObject, QSize, QTimer, QPropertyAnimation, QEasingCurve, QSizeF
+from PyQt6.QtCore import QThread, Qt, pyqtSignal, QObject, QSize, QTimer, QPropertyAnimation, QEasingCurve, QSizeF, QProcess
 from PyQt6.QtGui import QFont, QTextCursor, QPalette, QColor, QSyntaxHighlighter, QTextCharFormat, QBrush
 
 # External dependencies
@@ -354,6 +354,131 @@ class MarkdownTextBrowser(QTextBrowser):
             return highlight(code, lexer, html_formatter)
         
         return re.sub(r'<pre><code(?: class="(.*?)")?>(.*?)</code></pre>', replace_func, html_content, flags=re.DOTALL)
+
+
+class AgentTerminal(QPlainTextEdit):
+    """A terminal widget for agent execution tasks.
+    
+    Runs a persistent bash shell via QProcess, shows output in real-time,
+    accepts input, and can be controlled programmatically by the agent.
+    """
+    
+    output_received = pyqtSignal(str)
+    command_finished = pyqtSignal(int)
+    prompt_ready = pyqtSignal()
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(False)
+        self.setStyleSheet("""
+            QPlainTextEdit {
+                background-color: #1a1b26;
+                color: #a6adc8;
+                font-family: 'Monospace', 'DejaVu Sans Mono', monospace;
+                font-size: 12px;
+                padding: 8px;
+                border: none;
+            }
+        """)
+        
+        # Font
+        font = QFont("Monospace", 11)
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        self.setFont(font)
+        
+        # Process
+        self._process = QProcess(self)
+        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._process.readyReadStandardOutput.connect(self._on_output)
+        self._process.finished.connect(self._on_finished)
+        self._process.errorOccurred.connect(self._on_error)
+        
+        # State
+        self._pending_input = ""
+        self._at_prompt = False
+        self._command_buffer = ""
+        self._shell_started = False
+        
+        # Start shell
+        self._start_shell()
+        
+        # Connect input
+        self.textChanged.connect(self._on_text_changed)
+        
+    def _start_shell(self):
+        """Start a persistent bash shell."""
+        self._process.start("bash", ["-i"])  # Interactive mode
+        if not self._process.waitForStarted(3000):
+            self.appendPlainText("[Error] Failed to start shell")
+            return
+            
+    def _on_output(self):
+        """Handle output from shell."""
+        data = self._process.readAllStandardOutput()
+        text = bytes(data).decode("utf-8", errors="replace")
+        
+        # Move cursor to end and insert
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(text)
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+        
+        self.output_received.emit(text)
+        
+        # Check for prompt (only once after initial start)
+        if not self._shell_started and (text.strip().endswith("$") or text.strip().endswith("#") or text.strip().endswith("> ")):
+            self._shell_started = True
+            self._at_prompt = True
+            self.prompt_ready.emit()
+            
+    def _on_finished(self, exit_code, exit_status):
+        """Handle shell exit."""
+        self.appendPlainText(f"\n[Shell exited with code {exit_code}]")
+        self.command_finished.emit(exit_code)
+        
+    def _on_error(self, error):
+        """Handle process error."""
+        error_msg = self._process.errorString()
+        self.appendPlainText(f"\n[Process error: {error_msg}]")
+        
+    def _on_text_changed(self):
+        """Handle user input."""
+        # This is a simple approach - in practice you'd want more sophisticated input handling
+        pass
+        
+    def send_command(self, command: str):
+        """Send a command to the shell programmatically."""
+        if self._process.state() != QProcess.ProcessState.Running:
+            self.appendPlainText("[Error] Shell not running")
+            return
+            
+        # Write command + newline
+        self._process.write((command + "\n").encode("utf-8"))
+        self._command_buffer = command
+        
+    def send_text(self, text: str):
+        """Send raw text to the shell."""
+        if self._process.state() == QProcess.ProcessState.Running:
+            self._process.write(text.encode("utf-8"))
+            
+    def send_ctrl_c(self):
+        """Send Ctrl+C to interrupt current command."""
+        if self._process.state() == QProcess.ProcessState.Running:
+            # Send SIGINT to the process group
+            import os
+            import signal
+            try:
+                os.killpg(os.getpgid(self._process.processId()), signal.SIGINT)
+            except Exception:
+                pass
+            
+    def closeEvent(self, event):
+        """Clean up on close."""
+        if self._process.state() == QProcess.ProcessState.Running:
+            self._process.terminate()
+            self._process.waitForFinished(1000)
+        super().closeEvent(event)
 
 
 class MessageBubble(QWidget):
