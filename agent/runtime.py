@@ -1,3 +1,4 @@
+import os
 import threading
 import uuid
 from typing import Dict, List, Optional
@@ -16,6 +17,12 @@ class AgentRuntime:
         self.executor = ToolExecutor(registry)
         self._cancellation_tokens: Dict[str, threading.Event] = {}
         self._cancellation_lock = threading.Lock()
+
+    def _execution_model_id(self) -> str:
+        """Map realtime Live models to a normal text/tool model for execution."""
+        if "live" in self.model_id.lower():
+            return os.getenv("HEAVY_AGENT_MODEL", "gemini-3.1-flash-lite")
+        return self.model_id
 
     def cancel_task(self, task_id: str) -> bool:
         with self._cancellation_lock:
