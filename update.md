@@ -1,46 +1,61 @@
-# Update Log
+# Project Update Log
 
-## Current Phase Status
+## Current Status
 
-**Phases 1–6 are implemented foundations with hardening and integration in progress. They are not complete. Phase 7 is deferred until the criteria below are met; Phase 8 has not started.**
+**Phase 1–6 hardening and integration changes are implemented locally.** The project has not yet cleared the final Phase 1–6 completion gate: review the remaining security boundaries and confirm GitHub Actions passes on the published commit. Phase 7 remains deferred until that gate is met. Phase 8 has not started.
+
+## Work Completed
 
 ### Phase 1 — Unified Tool Execution
 
-- Agent-issued tools are validated and evaluated by the shared `ToolExecutor` before handlers run.
-- Approval waits are bounded and cancellable. Approved work executes on the agent worker rather than blocking the UI thread.
-- Legacy XML tool parsing and the separate normal-chat provider worker have been removed.
+- Agent-requested tool calls pass through argument validation, policy evaluation, approval when required, and the shared executor before registered handlers execute.
+- Approval waits have a finite timeout and respond to task cancellation. An approved operation runs on its waiting background worker instead of executing on the UI thread.
+- Removed the normal-chat XML tool parser and its separate provider worker.
+- Removed direct desktop actions from the chat UI; supported desktop operations are registered agent tools.
 
-### Phase 2 — Agent Runtime
+### Phase 2 — Agent Runtime and Providers
 
-- Keyboard and transcribed voice messages use `AgentRuntime`.
-- Gemini and Ollama conversations use provider adapters behind the runtime.
-- Cancellation state is tied to task lifetime and released on completion.
+- Keyboard chat and transcribed voice input share the same `AgentRuntime` request path.
+- Gemini and Ollama use provider adapters with a common response and tool-call interface.
+- Direct Q&A can run without exposing tools; delegated tasks and screen/desktop requests enable the required tools.
+- Cancellation tokens are scoped to task lifetime, and duplicate active task IDs are rejected.
 
 ### Phase 3 — Structured Tool Calls
 
-- Tool definitions use provider-independent JSON schemas.
-- Arguments are type-checked, required fields enforced, and undeclared fields rejected before policy evaluation.
+- Tool schemas use provider-independent JSON types.
+- Required fields, argument types, nested values, and undeclared properties are validated before policy evaluation.
+- Removed the legacy XML `<read>`, `<search>`, `<bash>`, and `<write>` parsing path.
 
-### Phase 4 — Workspace and Security
+### Phase 4 — Workspace and Shell Policy
 
-- File tools resolve paths against configured workspace roots and reject paths outside them.
-- Shell allowlisting uses parsed commands rather than string-prefix matching. Commands outside the read-only allowlist require approval while safe mode is on; disabling safe mode explicitly allows non-blocked commands. Execution uses a fixed working directory, filtered environment, timeout, and output limit.
-- **Approval is not an OS sandbox. Non-allowlisted shell commands permitted with safe mode off, or approved while safe mode is on, are not guaranteed to be filesystem-confined. Do not treat this as safe for unattended execution; stronger OS-level isolation remains future work.**
+- Filesystem tools resolve paths against configured workspace roots, including symlink resolution; direct handler calls enforce the same boundary.
+- Shell policy parses commands rather than trusting string prefixes. A narrow read-only allowlist runs without approval; blocked destructive executables are denied.
+- Shell execution uses a fixed working directory, a filtered environment, a timeout, process-group termination on timeout, and a bounded output buffer.
+- Audit records avoid storing raw command text and file contents; execution is denied if the audit log cannot be written.
+- CI now installs `portaudio19-dev`, addressing the observed `PyAudio` build failure caused by missing `portaudio.h`.
 
-### Phase 5 — Unified Voice
+### Phase 5 — Voice and Realtime Provider
 
-- Voice transcription feeds the same text submission/runtime path as keyboard input.
-- Realtime provider code remains separate and must not execute privileged tools directly.
+- Transcribed push-to-talk messages are submitted through the same runtime as keyboard messages.
+- Gemini Live no longer registers or executes privileged OS tools directly; desktop actions use the main runtime and its policy/approval flow.
 
-### Phase 6 — Observability
+### Phase 6 — Task Observability
 
-- Task panels and tool progress are keyed by task ID, so concurrent tasks do not share step state.
-- Approval results and task completion/failure remain visible in the UI.
+- Task panels and tool steps are keyed by task ID, isolating concurrent task progress.
+- Approval, tool completion, timeout, and task failure states are reflected in task progress.
+- Event subscriptions are synchronized and removed when the UI closes.
 
-## Phase 7 Entry Criteria
+## Validation Performed
 
-Start the evaluation phase only after Phases 1–6 have been reviewed against the current application paths, relevant targeted tests pass, and CI is green. The existing core regression tests are validation for the implemented architecture, not a declaration that Phase 7 is complete.
+- Full local test suite: **41 passed**.
+- Python compilation completed successfully.
+- `git diff --check` completed successfully.
+- GitHub Actions previously failed during dependency installation because `portaudio.h` was missing. The workflow now installs `portaudio19-dev`; its result on the published change still needs confirmation.
 
-## Phase 8
+## Remaining Work and Limitations
 
-Plugin infrastructure has not started.
+1. Confirm GitHub Actions passes after these changes are pushed. Fix any failures before declaring Phases 1–6 complete.
+2. Review the execution paths and security assumptions against the target desktop environment.
+3. **This is not an OS sandbox.** Arbitrary shell commands permitted with safe mode disabled, or approved while safe mode is enabled, can access files outside the configured workspace. Do not use unattended arbitrary shell execution as if workspace policy confined it; stronger OS-level isolation remains future work.
+4. Once Phase 1–6 review and CI are green, proceed to Phase 7 evaluation work, including broader boundary coverage and explicit cancellation, approval-bypass, and resource-use cases.
+5. Phase 8 plugin infrastructure (including Calendar, browser-agent, and RAG integrations) has not started.
