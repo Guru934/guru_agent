@@ -25,6 +25,13 @@ class FastActionResolverTests(unittest.TestCase):
             FastAction("search_and_play_youtube", {"query": "kalyani song"}),
         )
 
+    def test_composite_open_youtube_and_play_is_deterministic(self):
+        action = resolve_fast_action("Open YouTube and play Kalyani")
+        self.assertEqual(
+            action,
+            FastAction("search_and_play_youtube", {"query": "kalyani"}),
+        )
+
     def test_normal_question_is_not_fast_action(self):
         self.assertIsNone(resolve_fast_action("what is volume normalization?"))
 
