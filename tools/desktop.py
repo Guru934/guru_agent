@@ -100,7 +100,7 @@ def search_and_play_youtube(query: str) -> str:
         encoded_query = urllib.parse.quote(query)
         url = f"https://www.youtube.com/results?search_query={encoded_query}"
         request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=10) as response:
             html = response.read().decode("utf-8")
         video_ids = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", html)
         if not video_ids:
