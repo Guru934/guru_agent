@@ -51,11 +51,11 @@
 - Python compilation completed successfully.
 - `git diff --check` completed successfully.
 - GitHub Actions initially failed during dependency installation because `portaudio.h` was missing; the workflow now installs `portaudio19-dev`.
-- GitHub Actions then aborted while initializing Qt under `xvfb-run`. The workflow now uses Qt's offscreen platform plugin, which matches the local headless test run; confirm the next GitHub Actions run passes.
+- GitHub Actions then aborted while initializing Qt under `xvfb-run`. The workflow now uses Qt's offscreen platform plugin, matching the local headless test run. The workflow passed on commit `e62c785` (Actions run `36301709942`).
 
 ## Remaining Work and Limitations
 
-1. Confirm the latest GitHub Actions run passes after the Qt test adjustment. Fix any failures before declaring Phases 1–6 complete.
+1. Keep GitHub Actions green on subsequent changes before declaring Phases 1–6 complete.
 2. Review the execution paths and security assumptions against the target desktop environment.
 3. **This is not an OS sandbox.** Arbitrary shell commands permitted with safe mode disabled, or approved while safe mode is enabled, can access files outside the configured workspace. Do not use unattended arbitrary shell execution as if workspace policy confined it; stronger OS-level isolation remains future work.
 4. Once Phase 1–6 review and CI are green, proceed to Phase 7 evaluation work, including broader boundary coverage and explicit cancellation, approval-bypass, and resource-use cases.
