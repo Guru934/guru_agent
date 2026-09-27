@@ -24,8 +24,8 @@ from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.formatters import HtmlFormatter
 from pygments.styles import get_style_by_name 
 
-from cat_talker.agentic_tools import read_file, ripgrep_search, execute_bash, write_file, approve_action, reject_action, SCRATCHPAD_PENDING_ACTIONS
-from cat_talker.assistant_features import (
+from agent.tool_registry import read_file, ripgrep_search, execute_bash, write_file, approve_action, reject_action, SCRATCHPAD_PENDING_ACTIONS
+from tools.browser import (
     analyze_screen_image,
     build_approval_message,
     capture_screen_snapshot,
@@ -34,10 +34,13 @@ from cat_talker.assistant_features import (
     transcribe_audio_from_microphone,
     voice_input_status,
 )
-from cat_talker.db import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
-from cat_talker.desktop_actions import handle_desktop_action
-from cat_talker.llm_router import get_installed_models, chat_completion_stream
-from cat_talker.orchestrator import AgentOrchestrator
+from memory.sqlite import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
+from tools.desktop import handle_desktop_action
+from providers import get_installed_models, chat_completion_stream
+from ui.widgets import AutoResizingTextEdit, MarkdownTextBrowser, SessionRowWidget, DummyVisualizerEmitter
+from ui.chat_view import ChatWorker, TranscriptionWorker
+from ui.approval_dialog import ApprovalDialog
+from agent.planner import AgentOrchestrator
 
 
 # --- Constants & Style (Dracula theme colors) --
@@ -285,439 +288,6 @@ QPushButton#send_btn:hover {{
 """
 
 
-class PygmentsHtmlFormatter(HtmlFormatter):
-    def __init__(self, **options):
-        super().__init__(**options)
-        self.cssclass = "codehilite" 
-        self.noclasses = True 
-
-# Global formatter instance
-html_formatter = PygmentsHtmlFormatter(full=False, style=get_style_by_name('dracula'))
-
-
-class SessionRowWidget(QWidget):
-    delete_clicked = pyqtSignal(str)
-
-    def __init__(self, session_id, title, is_active, parent=None):
-        super().__init__(parent)
-        self.session_id = session_id
-        
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 6, 8, 6)
-        layout.setSpacing(8)
-        
-        # Session title label
-        self.label = QLabel(title)
-        if is_active:
-            self.label.setStyleSheet("color: #bd93f9; font-size: 13px; font-weight: bold;")
-        else:
-            self.label.setStyleSheet("color: #c0caf5; font-size: 13px; font-weight: 500;")
-        layout.addWidget(self.label, stretch=1)
-        
-        # Delete action button
-        self.delete_btn = QPushButton("✕")
-        self.delete_btn.setFixedSize(22, 22)
-        self.delete_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #565f89;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #f7768e;
-                color: #ffffff;
-            }
-        """)
-        self.delete_btn.clicked.connect(lambda: self.delete_clicked.emit(self.session_id))
-        layout.addWidget(self.delete_btn, stretch=0)
-        
-        self.setFixedHeight(38)
-        # Replaced
-
-class MarkdownTextBrowser(QTextBrowser):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setOpenExternalLinks(True)
-        self.setOpenLinks(True)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth) 
-        self.document().setDefaultStyleSheet(QSS_STYLES) 
-
-    def setMarkdown(self, markdown_text):
-        html = markdown.markdown(markdown_text, extensions=['fenced_code', 'codehilite', 'nl2br'])
-        final_html = self._highlight_code_blocks(html)
-        self.setHtml(final_html)
-
-    def _highlight_code_blocks(self, html_content):
-        def replace_func(match):
-            code = match.group(2)
-            lang_match = re.search(r'language-([a-zA-Z0-9]+)', match.group(1) or '')
-            lang = lang_match.group(1) if lang_match else 'text'
-            
-            try:
-                lexer = get_lexer_by_name(lang)
-            except Exception:
-                lexer = guess_lexer(code) 
-            
-            return highlight(code, lexer, html_formatter)
-        
-        return re.sub(r'<pre><code(?: class="(.*?)")?>(.*?)</code></pre>', replace_func, html_content, flags=re.DOTALL)
-
-
-class MessageBubble(QWidget):
-    def __init__(self, role: str, content: str, is_error: bool = False, parent=None):
-        super().__init__(parent)
-        self.role = role
-        self.content = content
-        self.is_error = is_error
-        self.init_ui()
-
-    def init_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5) 
-
-        self.text_display = MarkdownTextBrowser()
-        self.text_display.setReadOnly(True)
-        self.text_display.setMarkdown(self.content)
-        self.text_display.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.text_display.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.text_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
-
-        if self.role == "user":
-            self.text_display.setProperty("class", "user-bubble")
-            spacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            layout.addSpacerItem(spacer)
-            layout.addWidget(self.text_display)
-        elif self.role == "assistant":
-            if self.is_error:
-                self.text_display.setProperty("class", "error-bubble")
-                layout.addWidget(self.text_display, 85)
-                spacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-                layout.addSpacerItem(spacer)
-            else:
-                self.text_display.setProperty("class", "ai-bubble")
-                layout.addWidget(self.text_display, 100)
-        elif self.role == "system":
-            self.text_display.setProperty("class", "system-bubble")
-            spacer1 = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            layout.addSpacerItem(spacer1)
-            layout.addWidget(self.text_display, 60)
-            spacer2 = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            layout.addSpacerItem(spacer2)
-        
-        self.text_display.setStyleSheet(QSS_STYLES) 
-        self.setLayout(layout)
-        
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
-
-    def adjust_height(self):
-        if self.text_display is None: return
-        doc = self.text_display.document()
-        doc.setTextWidth(self.text_display.viewport().width())
-        height = int(doc.size().height()) + 20
-        self.text_display.setMinimumHeight(height)
-        self.text_display.setMaximumHeight(height)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.adjust_height()
-
-
-class AutoResizingTextEdit(QTextEdit):
-    text_changed_height = pyqtSignal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(50) 
-        self.document().contentsChanged.connect(self.update_height)
-        self.setPlaceholderText("Type a message or tool command...")
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setObjectName("input_box") # For QSS styling
-
-
-    submit_pressed = pyqtSignal()
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Return and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            self.submit_pressed.emit()
-            event.accept()
-        else:
-            super().keyPressEvent(event)
-
-    def update_height(self):
-        doc_height = self.document().size().height() # Returns QSizeF.height()
-        new_height = int(doc_height + self.fontMetrics().lineSpacing() * 2) 
-        if new_height < 50: 
-            new_height = 50
-        elif new_height > 200: 
-            new_height = 200
-        
-        if self.height() != new_height:
-            self.setFixedHeight(new_height)
-            self.text_changed_height.emit() 
-
-class DummyVisualizerEmitter(QObject):
-    state_signal = pyqtSignal(str)
-    glow_signal = pyqtSignal(str)
-
-    def __init__(self):
-        super().__init__()
-        
-        
-
-
-class ErrorBox(QFrame):
-    def __init__(self, title: str, content: str, parent=None):
-        super().__init__(parent)
-        self.title = title
-        self.content = content
-        self.is_expanded = False
-        self.init_ui()
-        self.setObjectName("error_box") # For QSS styling
-
-    def init_ui(self):
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setFrameShadow(QFrame.Shadow.Raised)
-        self.setStyleSheet(f"""
-            QFrame#error_box {{ 
-                background-color: {COLORS['error_bg']}; 
-                border: 1px solid {COLORS['red']};
-                border-radius: 8px;
-                padding: 5px;
-            }}
-            QFrame#error_box QLabel {{ color: {COLORS['error_fg']}; }}
-            QFrame#error_box QToolButton {{
-                background-color: {COLORS['red']}; 
-                border: none; 
-                color: {COLORS['error_fg']};
-            }}
-            QFrame#error_box QToolButton::hover {{ background-color: {COLORS['pink']}; }}
-        """)
-
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(5, 5, 5, 5)
-
-        header_layout = QHBoxLayout()
-        self.title_label = QLabel(f"<b>{self.title}</b>")
-        self.title_label.setStyleSheet("color: white;") # Inline for specific label
-        header_layout.addWidget(self.title_label)
-        header_layout.addStretch()
-
-        self.toggle_button = QToolButton(self)
-        self.toggle_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
-        self.toggle_button.clicked.connect(self.toggle_content)
-        header_layout.addWidget(self.toggle_button)
-        main_layout.addLayout(header_layout)
-
-        self.content_widget = QWidget(self)
-        self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(5, 0, 5, 5)
-
-        self.content_label = QLabel(self.content)
-        self.content_label.setWordWrap(True)
-        self.content_label.setStyleSheet("color: white;")
-        self.content_layout.addWidget(self.content_label)
-        self.content_widget.hide()
-
-        main_layout.addWidget(self.content_widget)
-
-    def toggle_content(self):
-        self.is_expanded = not self.is_expanded
-        self.content_widget.setVisible(self.is_expanded)
-        if self.is_expanded:
-            self.toggle_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
-        else:
-            self.toggle_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
-
-
-class ChatWorker(QObject):
-    chunk_received = pyqtSignal(str)
-    finished = pyqtSignal(str) 
-    error_occurred = pyqtSignal(str, str) 
-    visualizer_state_signal = pyqtSignal(str)
-    visualizer_glow_signal = pyqtSignal(str)
-
-    def __init__(self, model_id: str, messages: List[Dict[str, Any]], visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
-        super().__init__()
-        self.model_id = model_id
-        self.messages = messages
-        self.visualizer_state_emitter = visualizer_state_emitter
-        self.visualizer_glow_emitter = visualizer_glow_emitter
-        
-    def run(self):
-        full_response = ""
-        try:
-            if self.visualizer_state_emitter:
-                self.visualizer_state_emitter.emit("thinking")
-            if self.visualizer_glow_emitter:
-                self.visualizer_glow_emitter.emit("thinking")
-
-            for chunk in chat_completion_stream(self.model_id, self.messages):
-                full_response += chunk
-                self.chunk_received.emit(chunk)
-        except Exception as e:
-            error_title = "API Error"
-            error_message = str(e)
-            if "ConnectionRefusedError" in error_message or "Could not connect" in error_message:
-                error_message = "Could not connect to the Ollama server. Please ensure Ollama is running."
-                error_title = "Ollama Connection Error"
-            self.error_occurred.emit(error_title, error_message)
-            full_response = f"ERROR: {error_message}" 
-        finally:
-            if self.visualizer_state_emitter:
-                self.visualizer_state_emitter.emit("idle")
-            if self.visualizer_glow_emitter:
-                self.visualizer_glow_emitter.emit("connected")
-            self.finished.emit(full_response)
-
-
-
-class TranscriptionWorker(QThread):
-    finished_signal = pyqtSignal(str)
-
-    def __init__(self, audio_path: str):
-        super().__init__()
-        self.audio_path = audio_path
-
-    def run(self):
-        from cat_talker.assistant_features import transcribe_audio_file
-        transcript = transcribe_audio_file(self.audio_path)
-        self.finished_signal.emit(transcript)
-
-
-class ApprovalDialog(QDialog):
-    def __init__(self, title: str, summary: str, details: str, risk_level: str, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Approve Action")
-        self.setFixedSize(500, 350)
-        
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #1e1e2e;
-                color: #cdd6f4;
-            }
-            QLabel#title_label {
-                font-size: 16px;
-                font-weight: bold;
-                color: #cdd6f4;
-            }
-            QLabel#risk_high {
-                background-color: #f38ba8;
-                color: #11111b;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QLabel#risk_medium {
-                background-color: #f9e2af;
-                color: #11111b;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QLabel#risk_low {
-                background-color: #a6e3a1;
-                color: #11111b;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QTextEdit {
-                background-color: #181825;
-                color: #a6adc8;
-                border: 1px solid #313244;
-                border-radius: 8px;
-                padding: 8px;
-                font-family: monospace;
-            }
-            QPushButton {
-                background-color: #313244;
-                color: #cdd6f4;
-                padding: 8px 16px;
-                border-radius: 6px;
-                border: none;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45475a;
-            }
-            QPushButton#btn_allow {
-                background-color: #a6e3a1;
-                color: #11111b;
-            }
-            QPushButton#btn_allow:hover {
-                background-color: #94e2d5;
-            }
-            QPushButton#btn_reject {
-                background-color: #f38ba8;
-                color: #11111b;
-            }
-            QPushButton#btn_reject:hover {
-                background-color: #eba0ac;
-            }
-        """)
-
-        layout = QVBoxLayout(self)
-
-        # Header: Title and Risk
-        header_layout = QHBoxLayout()
-        title_label = QLabel(title)
-        title_label.setObjectName("title_label")
-        header_layout.addWidget(title_label)
-        
-        header_layout.addStretch()
-        
-        risk_label = QLabel(f"Risk: {risk_level.capitalize()}")
-        if risk_level.lower() == "high":
-            risk_label.setObjectName("risk_high")
-        elif risk_level.lower() == "medium":
-            risk_label.setObjectName("risk_medium")
-        else:
-            risk_label.setObjectName("risk_low")
-        header_layout.addWidget(risk_label)
-        
-        layout.addLayout(header_layout)
-
-        # Summary
-        summary_label = QLabel(summary)
-        summary_label.setWordWrap(True)
-        layout.addWidget(summary_label)
-
-        # Details Box
-        details_box = QTextEdit()
-        details_box.setReadOnly(True)
-        details_box.setPlainText(details)
-        layout.addWidget(details_box)
-
-        # Always Allow Checkbox
-        self.always_allow_checkbox = QCheckBox("Always allow this kind of action")
-        layout.addWidget(self.always_allow_checkbox)
-
-        # Buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        
-        reject_btn = QPushButton("Reject")
-        reject_btn.setObjectName("btn_reject")
-        reject_btn.clicked.connect(self.reject)
-        
-        allow_btn = QPushButton("Allow")
-        allow_btn.setObjectName("btn_allow")
-        allow_btn.clicked.connect(self.accept)
-        
-        button_layout.addWidget(reject_btn)
-        button_layout.addWidget(allow_btn)
-        
-        layout.addLayout(button_layout)
-        
-    def is_always_allow_checked(self) -> bool:
-        return self.always_allow_checkbox.isChecked()
-
 
 class ScratchpadWindow(QMainWindow):
     def __init__(self, visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
@@ -758,7 +328,7 @@ class ScratchpadWindow(QMainWindow):
         
         # Start Gemini Live
         try:
-            from cat_talker.gemini_live_agent import GeminiDesktopAgent
+            from providers.gemini_live import GeminiDesktopAgent
             import threading, asyncio
             self.live_agent = GeminiDesktopAgent()
             
@@ -877,10 +447,9 @@ class ScratchpadWindow(QMainWindow):
         self.chat_feed_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
          
         self.chat_feed_scroll_area.setWidget(self.chat_feed_content_widget)
-        
+
         # QSplitter to allow resizing the terminal drawer
-        from ui_scratchpad import MarkdownTextBrowser  # if needed, it's already there
-        
+
         self.chat_splitter = QSplitter(Qt.Orientation.Vertical)
         
         # Move scroll area into splitter
@@ -988,7 +557,7 @@ class ScratchpadWindow(QMainWindow):
         self.sidebar_widget.setVisible(not self.sidebar_widget.isVisible())
 
     def delete_session_handler(self, session_id: str):
-        from cat_talker.db import delete_session
+        from memory.sqlite import delete_session
         delete_session(session_id)
         if self.current_session_id == session_id:
             self.current_session_id = None
@@ -1199,7 +768,7 @@ class ScratchpadWindow(QMainWindow):
         self.voice_cancel_requested = False
         self.set_voice_button_state("recording")
         
-        from cat_talker.assistant_features import start_continuous_recording
+        from tools.browser import start_continuous_recording
         self.voice_recording_proc, self.voice_audio_path = start_continuous_recording()
 
         # Fallback if no backend
@@ -1248,7 +817,7 @@ class ScratchpadWindow(QMainWindow):
 
             return
 
-        from cat_talker.assistant_features import stop_continuous_recording
+        from tools.browser import stop_continuous_recording
 
         if hasattr(self, 'voice_recording_proc'):
             stop_continuous_recording(self.voice_recording_proc)
@@ -1688,7 +1257,7 @@ class ScratchpadWindow(QMainWindow):
 
     def poll_heavy_agent_logs(self):
         import os
-        from cat_talker.config import HANDOFF_STATUS_FILE
+        from config import HANDOFF_STATUS_FILE
         log_path = str(HANDOFF_STATUS_FILE)
         if not os.path.exists(log_path):
             return
@@ -1745,18 +1314,3 @@ class ScratchpadWindow(QMainWindow):
                             pass
         except Exception as e:
             pass
-
-def run_app():
-
-    app = QApplication(sys.argv)
-    dummy_emitter = DummyVisualizerEmitter()
-    w = ScratchpadWindow(
-        visualizer_state_emitter=dummy_emitter.state_signal,
-        visualizer_glow_emitter=dummy_emitter.glow_signal,
-    )
-    w.show()
-    return app.exec()
-
-
-if __name__ == '__main__':
-    sys.exit(run_app())

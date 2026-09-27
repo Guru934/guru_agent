@@ -1,7 +1,9 @@
 import os
 import sys
 
-from ui_scratchpad import QApplication, ScratchpadWindow, DummyVisualizerEmitter
+from PyQt6.QtWidgets import QApplication
+from ui.main_window import ScratchpadWindow
+from ui.widgets import DummyVisualizerEmitter
 
 
 def configure_qt_platform():
@@ -22,7 +24,7 @@ def configure_qt_platform():
 
 def main():
     try:
-        from cat_talker.diagnostics import run_diagnostics
+        from diagnostics import run_diagnostics
         run_diagnostics()
     except Exception as e:
         print(f"Diagnostics error: {e}")

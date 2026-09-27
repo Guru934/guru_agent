@@ -3,7 +3,7 @@ import unittest
 from PyQt6.QtWidgets import QApplication
 
 from ui_scratchpad import ScratchpadWindow
-from cat_talker.assistant_features import (
+from tools.browser import (
     build_approval_message,
     capture_screen_snapshot,
     transcribe_audio_from_microphone,
@@ -16,7 +16,7 @@ from cat_talker.assistant_features import (
 
 class AssistantFeaturesTests(unittest.TestCase):
     def setUp(self):
-        from cat_talker.db import init_db
+        from memory.sqlite import init_db
         init_db()
 
     def test_build_approval_message_includes_action_and_risk(self):

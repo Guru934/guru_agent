@@ -6,3 +6,4 @@ __pycache__/
 
 # Local runtime state
 ~/.local/share/cat-talker/
+archive_legacy/

@@ -1,6 +1,6 @@
 import unittest
 
-from cat_talker.orchestrator import AgentOrchestrator
+from agent.policy import AgentOrchestrator
 
 
 class AgentOrchestratorTests(unittest.TestCase):
