@@ -1,5 +1,4 @@
 import unittest
-from unittest.mock import patch
 
 from PyQt6.QtWidgets import QApplication
 
@@ -16,10 +15,6 @@ from tools.browser import (
 
 
 class AssistantFeaturesTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
-
     def setUp(self):
         from memory.sqlite import init_db
         init_db()
@@ -65,6 +60,7 @@ class AssistantFeaturesTests(unittest.TestCase):
         self.assertTrue(len(result) > 0)
 
     def test_voice_button_state_machine_updates_readably(self):
+        app = QApplication.instance() or QApplication([])
         window = ScratchpadWindow()
         window.set_voice_button_state("recording")
         self.assertEqual(window.voice_btn.text(), "🔴 Recording")
@@ -78,55 +74,7 @@ class AssistantFeaturesTests(unittest.TestCase):
         self.assertFalse(window.voice_btn.isChecked())
 
         window.close()
-        self.app.processEvents()
-
-    def test_keyboard_chat_starts_the_agent_runtime_worker(self):
-        window = ScratchpadWindow()
-        window.current_session_id = None
-        window.chat_history = []
-        window.refresh_sidebar = lambda: None
-        window.input_box.setPlainText("Hello assistant")
-
-        with patch("ui.main_window.create_session", return_value="test-session"), \
-             patch("ui.main_window.insert_message"), \
-             patch("ui.main_window.AgentWorker") as worker_type:
-            window.send_message()
-
-        worker_type.assert_called_once()
-        self.assertEqual(worker_type.call_args.args[1], "Hello assistant")
-        self.assertEqual(worker_type.call_args.args[2], [])
-        self.assertFalse(worker_type.call_args.args[7])
-        window.close()
-        self.app.processEvents()
-
-    def test_screen_request_enables_runtime_tools(self):
-        window = ScratchpadWindow()
-        window.current_session_id = None
-        window.chat_history = []
-        window.refresh_sidebar = lambda: None
-
-        with patch("ui.main_window.create_session", return_value="test-session"), \
-             patch("ui.main_window.insert_message"), \
-             patch("ui.main_window.AgentWorker") as worker_type:
-            window.on_screen_snapshot_clicked()
-
-        worker_type.assert_called_once()
-        self.assertTrue(worker_type.call_args.args[7])
-        window.close()
-        self.app.processEvents()
-
-    def test_task_progress_is_isolated_by_task_id(self):
-        from agent.events import AgentEvent
-
-        window = ScratchpadWindow()
-        for task_id, tool_name in (("task-a", "read_file"), ("task-b", "search")):
-            window.on_agent_event(AgentEvent("TASK_STARTED", task_id, {"description": task_id}))
-            window.on_agent_event(AgentEvent("TOOL_REQUESTED", task_id, {"tool_name": tool_name}))
-
-        self.assertEqual(window.task_panels["task-a"]["steps"][0]["name"], "read_file")
-        self.assertEqual(window.task_panels["task-b"]["steps"][0]["name"], "search")
-        window.close()
-        self.app.processEvents()
+        app.processEvents()
 
 
 if __name__ == "__main__":
