@@ -1311,22 +1311,30 @@ class ScratchpadWindow(QMainWindow):
             self.add_system_message_to_feed("Voice assistant stopped.", is_error=False)
         else:
             # Start the voice assistant
+            try:
+                from providers.gemini_live import start_agent_in_thread
+            except Exception as error:
+                self.voice_assistant_active = False
+                self.voice_assistant_btn.setChecked(False)
+                self.voice_assistant_btn.setText("🎤 Voice Assistant")
+                self._update_connection_state("error")
+                self.add_system_message_to_feed(
+                    f"Voice assistant could not start: {error}",
+                    is_error=True,
+                )
+                return
+
             self.voice_assistant_active = True
             self.voice_assistant_btn.setChecked(True)
             self.voice_assistant_btn.setText("🛑 Stop Voice Assistant")
             self.voice_connection_label.setText("🟡 Connecting...")
             self.voice_connection_label.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px; margin-left: 5px;")
-            
-            # Start Gemini Live in a background thread
-            from providers.gemini_live import start_agent_in_thread
-            import asyncio
-            
-            # We need to capture the agent instance - poll for it
+
+            # The Live provider owns its own asyncio loop. The UI only owns the
+            # background thread that runs it.
             global_agent_ref = [None]
-            
+
             def run_live_agent():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
                 try:
                     start_agent_in_thread(
                         volume_cb=self._on_volume_update,
@@ -1337,23 +1345,40 @@ class ScratchpadWindow(QMainWindow):
                         assistant_bridge=self.assistant_bridge,
                         global_agent_ref=global_agent_ref,
                     )
-                except Exception as e:
+                except Exception as error:
                     logger = get_logger("ui")
-                    logger.error(f"Gemini Live thread error: {e}")
-                finally:
-                    loop.close()
-            
+                    logger.error(f"Gemini Live thread error: {error}", exc_info=True)
+                    QTimer.singleShot(
+                        0,
+                        lambda: self._handle_live_start_failure(str(error)),
+                    )
+
             def capture_agent():
-                if global_agent_ref[0] is not None:
-                    self.live_agent = global_agent_ref[0]
-                    self._update_connection_state(self.live_agent.get_connection_state())
-                else:
-                    QTimer.singleShot(500, capture_agent)
-            
+                agent = global_agent_ref[0]
+                if agent is not None:
+                    self.live_agent = agent
+                    self._update_connection_state(agent.get_connection_state())
+                    return
+
+                if self.live_agent_thread is not None and not self.live_agent_thread.is_alive():
+                    self._handle_live_start_failure("Gemini Live thread exited before establishing a connection.")
+                    return
+
+                QTimer.singleShot(250, capture_agent)
+
             self.live_agent_thread = threading.Thread(target=run_live_agent, daemon=True)
             self.live_agent_thread.start()
-            QTimer.singleShot(500, capture_agent)
+            QTimer.singleShot(250, capture_agent)
             self.add_system_message_to_feed("Starting voice assistant...", is_error=False)
+
+    def _handle_live_start_failure(self, message: str):
+        self.voice_assistant_active = False
+        self.voice_assistant_btn.setChecked(False)
+        self.voice_assistant_btn.setText("🎤 Voice Assistant")
+        self._update_connection_state("error")
+        if hasattr(self, "assistant_state_label"):
+            self.assistant_state_label.setText("🔴 Voice error")
+        self.add_system_message_to_feed(f"Voice assistant error: {message}", is_error=True)
 
     def _update_connection_state(self, state: str):
         """Update the connection state indicator."""

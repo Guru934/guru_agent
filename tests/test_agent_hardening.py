@@ -913,17 +913,32 @@ class Phase10DelegationTests(unittest.TestCase):
             self.bridge.active_tasks[task_id].cancellation_event.set()
     
     def test_delegation_creates_task_returns_task_id_immediately(self):
-        """Assistant delegation creates task, returns task_id immediately."""
-        task_id = self.bridge.delegate_task("Test task")
-        self.assertIsNotNone(task_id)
-        self.assertIsInstance(task_id, str)
-        self.assertTrue(len(task_id) > 0)
-        
-        # Task should be in active tasks
-        status = self.bridge.get_task_status(task_id)
-        self.assertIsNotNone(status)
-        self.assertEqual(status["description"], "Test task")
-        self.assertEqual(status["status"], "running")
+        """Assistant delegation creates a tracked background task and returns immediately."""
+        import threading
+        from unittest.mock import patch
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_run(*args, **kwargs):
+            started.set()
+            release.wait(timeout=2.0)
+
+        with patch("agent.assistant_bridge.AgentRuntime") as runtime_cls:
+            runtime_cls.return_value.run.side_effect = fake_run
+
+            task_id = self.bridge.delegate_task("Test task")
+            self.assertIsNotNone(task_id)
+            self.assertIsInstance(task_id, str)
+            self.assertTrue(len(task_id) > 0)
+            self.assertTrue(started.wait(timeout=1.0))
+
+            status = self.bridge.get_task_status(task_id)
+            self.assertIsNotNone(status)
+            self.assertEqual(status["description"], "Test task")
+            self.assertEqual(status["status"], "running")
+
+            release.set()
     
     def test_no_os_tool_executes_inside_gemini_live(self):
         """Gemini Live only has delegation tools, no OS tools."""
