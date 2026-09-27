@@ -320,8 +320,22 @@ class AssistantEventListener(QObject):
         pass  # No global bus to unsubscribe from
 
 class ScratchpadWindow(QMainWindow):
+    # Live callbacks arrive from the dedicated asyncio thread. Emit Qt signals
+    # so all widget mutations happen on the GUI thread.
+    live_state_signal = pyqtSignal(str)
+    live_text_signal = pyqtSignal(str, str)
+    live_bubble_signal = pyqtSignal(str)
+    live_glow_signal = pyqtSignal(str)
+    live_volume_signal = pyqtSignal(float)
+
     def __init__(self, visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
         super().__init__()
+
+        self.live_state_signal.connect(self._on_live_state)
+        self.live_text_signal.connect(self._on_live_text)
+        self.live_bubble_signal.connect(self._on_live_bubble)
+        self.live_glow_signal.connect(self._on_live_glow)
+        self.live_volume_signal.connect(self._on_volume_update)
         
         self.visualizer_state_emitter = visualizer_state_emitter
         self.visualizer_glow_emitter = visualizer_glow_emitter
@@ -481,6 +495,25 @@ class ScratchpadWindow(QMainWindow):
         
         top_bar_layout.addStretch()
         
+        self.fullscreen_btn = QPushButton("⛶")
+        self.fullscreen_btn.setToolTip("Toggle fullscreen (F11 or Super+F when not captured by the compositor)")
+        self.fullscreen_btn.setFixedSize(34, 34)
+        self.fullscreen_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3b4261;
+                color: #c0caf5;
+                border: none;
+                border-radius: 6px;
+                font-size: 18px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #4a5072;
+            }
+        """)
+        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
+        top_bar_layout.addWidget(self.fullscreen_btn)
+
         self.model_dropdown = QComboBox()
         self.model_dropdown.setObjectName("model_dropdown")
         self.populate_model_dropdown()
@@ -615,6 +648,28 @@ class ScratchpadWindow(QMainWindow):
 
     def toggle_sidebar(self):
         self.sidebar_widget.setVisible(not self.sidebar_widget.isVisible())
+
+    def toggle_fullscreen(self):
+        """Toggle compositor/application fullscreen from inside the app."""
+        if self.isFullScreen():
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        else:
+            self.showFullScreen()
+
+    def keyPressEvent(self, event):
+        # F11 is a reliable in-app fallback. Super+F also works when Hyprland
+        # does not consume the key combination as a global compositor bind.
+        is_super_f = (
+            event.key() == Qt.Key.Key_F
+            and bool(event.modifiers() & Qt.KeyboardModifier.SuperModifier)
+        )
+        if event.key() == Qt.Key.Key_F11 or is_super_f:
+            self.toggle_fullscreen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def delete_session_handler(self, session_id: str):
         from memory.sqlite import delete_session
@@ -1346,11 +1401,11 @@ class ScratchpadWindow(QMainWindow):
             def run_live_agent():
                 try:
                     start_agent_in_thread(
-                        volume_cb=self._on_volume_update,
-                        text_cb=self._on_live_text,
-                        state_cb=self._on_live_state,
-                        bubble_cb=self._on_live_bubble,
-                        glow_cb=self._on_live_glow,
+                        volume_cb=self.live_volume_signal.emit,
+                        text_cb=self.live_text_signal.emit,
+                        state_cb=self.live_state_signal.emit,
+                        bubble_cb=self.live_bubble_signal.emit,
+                        glow_cb=self.live_glow_signal.emit,
                         assistant_bridge=self.assistant_bridge,
                         global_agent_ref=global_agent_ref,
                     )
