@@ -88,6 +88,8 @@ def resolve_fast_action(text: str):
         query = youtube_play_prefix.group(1).strip()
         query = re.sub(r"\s+(?:on\s+)?youtube(?:\s+on\s+youtube)?$", "", query).strip()
         query = re.sub(r"\s+on\s+youtube$", "", query).strip()
+        if len(query) >= 2 and query[0] == query[-1] and query[0] in {"'", '"'}:
+            query = query[1:-1].strip()
         if query:
             return FastAction("search_and_play_youtube", {"query": query})
 
