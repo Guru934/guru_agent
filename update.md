@@ -51,7 +51,7 @@
 - Python compilation completed successfully.
 - `git diff --check` completed successfully.
 - GitHub Actions initially failed during dependency installation because `portaudio.h` was missing; the workflow now installs `portaudio19-dev`.
-- The first post-publish CI run passed dependency installation but aborted in newly added UI tests when Qt attempted to initialize a second application instance. The unstable extra widget tests were removed; confirm the next GitHub Actions run passes.
+- GitHub Actions then aborted while initializing Qt under `xvfb-run`. The workflow now uses Qt's offscreen platform plugin, which matches the local headless test run; confirm the next GitHub Actions run passes.
 
 ## Remaining Work and Limitations
 
