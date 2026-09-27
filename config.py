@@ -17,3 +17,7 @@ WORKSPACE_ROOTS = [
     Path(os.path.expanduser('~/guru_projects')),
     Path(os.path.expanduser('~/.local/share/guru_agent'))
 ]
+
+# Filesystem Limits
+MAX_READ_BYTES = 1_000_000
+MAX_WRITE_BYTES = 1_000_000

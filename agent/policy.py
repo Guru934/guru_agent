@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from agent.tool_registry import registry
+from agent.capabilities import registry as capability_registry
 from config import APP_DIR, USER_STATE_DIR
 from tools.workspace import resolve_workspace_path
 
@@ -96,6 +97,11 @@ class PolicyEngine:
             return tokens in (["git", "status"], ["git", "diff"], ["git", "log"])
         return False
 
+    def _check_capability_grant(self, tool_name: str, arguments: dict) -> bool:
+        """Check if there's a capability grant that allows this tool execution without approval."""
+        grant = capability_registry.check_grant(tool_name, arguments)
+        return grant is not None
+
     def _evaluate_shell(self, command: str, risk: str) -> PolicyDecision:
         try:
             tokens = shlex.split(command, posix=True)
@@ -136,7 +142,7 @@ class PolicyEngine:
             if not self._is_path_allowed(path):
                 decision = PolicyDecision(
                     False, False, "critical",
-                    f"Path {path!r} is outside the allowed workspace roots.",
+                    f"Path {path!r} is outside the allowed workspace roots."
                 )
             elif risk in {"high", "medium"} and self.safe_mode:
                 decision = PolicyDecision(
@@ -152,6 +158,15 @@ class PolicyEngine:
                 f"Safe mode requires manual approval for {risk}-risk actions."
                 if risk in {"high", "medium"} and self.safe_mode
                 else f"{risk.capitalize()}-risk action allowed.",
+            )
+
+        # Check capability grants - if a grant exists, remove approval requirement
+        if decision.requires_approval and self._check_capability_grant(tool_name, arguments):
+            decision = PolicyDecision(
+                True,
+                False,
+                risk,
+                f"Allowed by capability grant (no approval required)."
             )
 
         if not self._log_audit(tool_name, arguments, risk, decision):

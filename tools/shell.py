@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from config import APP_DIR
+from config import APP_DIR, WORKSPACE_ROOTS
 
 MAX_COMMAND_OUTPUT = 12_000
 COMMAND_TIMEOUT_SECONDS = 30
@@ -81,20 +81,31 @@ def execute_bash_command(command: str) -> str:
     return text
 
 def ripgrep_search_impl(query: str) -> str:
-    result = subprocess.run(
-        ["rg", "-n", query, "."],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(APP_DIR),
-        env=_command_environment(),
-        timeout=COMMAND_TIMEOUT_SECONDS,
-    )
-    if result.returncode == 1:
+    all_output = []
+    for root in WORKSPACE_ROOTS:
+        if not root.exists():
+            continue
+        result = subprocess.run(
+            ["rg", "-n", query, "."],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(root),
+            env=_command_environment(),
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 1:
+            continue
+        if result.returncode:
+            raise RuntimeError(f"ripgrep failed with status {result.returncode}: {result.stderr.strip()}")
+        output = result.stdout.strip()
+        if output:
+            all_output.append(f"=== {root} ===\n{output}")
+    
+    if not all_output:
         return "No matches found."
-    if result.returncode:
-        raise RuntimeError(f"ripgrep failed with status {result.returncode}: {result.stderr.strip()}")
-    output = result.stdout.strip()
-    if len(output) > MAX_COMMAND_OUTPUT:
-        output = output[:MAX_COMMAND_OUTPUT] + "\n[Output truncated.]"
-    return output
+    
+    combined = "\n\n".join(all_output)
+    if len(combined) > MAX_COMMAND_OUTPUT:
+        combined = combined[:MAX_COMMAND_OUTPUT] + "\n[Output truncated.]"
+    return combined

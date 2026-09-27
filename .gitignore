@@ -4,6 +4,12 @@
 __pycache__/
 *.pyc
 
+# Node.js
+node_modules/
+.npm/
+package-lock.json
+package.json
+
 # Local runtime state
 ~/.local/share/cat-talker/
 archive_legacy/

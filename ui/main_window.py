@@ -28,12 +28,16 @@ from tools.browser import (
     transcribe_audio_from_microphone,
     voice_input_status,
 )
+from utils import get_logger
 from memory.sqlite import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
 from providers import get_installed_models
 from ui.widgets import AutoResizingTextEdit, MarkdownTextBrowser, SessionRowWidget, DummyVisualizerEmitter, MessageBubble
 from ui.chat_view import AgentWorker, TranscriptionWorker
 from ui.approval_dialog import ApprovalDialog
+from agent.capabilities import registry as capability_registry, CapabilityGrant
 from agent.planner import AgentOrchestrator
+from agent.assistant_bridge import AssistantBridge
+from agent.assistant_events import AssistantEvent
 
 
 # --- Constants & Style (Dracula theme colors) --
@@ -284,6 +288,7 @@ QPushButton#send_btn:hover {{
 
 
 from agent.events import bus, AgentEvent
+from agent.assistant_events import AssistantEvent
 
 class GlobalAgentListener(QObject):
     event_signal = pyqtSignal(AgentEvent)
@@ -297,6 +302,19 @@ class GlobalAgentListener(QObject):
 
     def close(self):
         bus.unsubscribe(self.handle_event)
+
+class AssistantEventListener(QObject):
+    """Thread-safe listener for AssistantEvents from the AssistantBridge."""
+    assistant_event_signal = pyqtSignal(AssistantEvent)
+
+    def __init__(self):
+        super().__init__()
+
+    def handle_event(self, event: AssistantEvent):
+        self.assistant_event_signal.emit(event)
+
+    def close(self):
+        pass  # No global bus to unsubscribe from
 
 class ScratchpadWindow(QMainWindow):
     def __init__(self, visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
@@ -340,18 +358,26 @@ class ScratchpadWindow(QMainWindow):
         self.agent_task_sessions: Dict[str, Optional[str]] = {}
         self.agent_response_bubbles: Dict[str, Any] = {}
 
-
+        # Assistant Bridge for Gemini Live integration
+        self.assistant_bridge = AssistantBridge()
         
-        # Standalone GeminiLive background auto-connection was removed in Phase 5.
-        # Primary pipeline is Microphone UI toggle -> Transcription -> Standard AgentRuntime.
+        # Thread-safe listener for AssistantEvents
+        self.assistant_event_listener = AssistantEventListener()
+        self.assistant_event_listener.assistant_event_signal.connect(self._on_assistant_event)
+        self.assistant_bridge.register_event_handler(self.assistant_event_listener.handle_event)
+
+        # Gemini Live agent (started on-demand, not auto)
         self.live_agent = None
+        self.live_agent_thread = None
+        self.voice_assistant_active = False
 
         self.orchestrator = AgentOrchestrator(default_model="gemini-3.1-flash-lite", safe_mode=(get_preference("safe_mode", "true") == "true"))
         from agent.policy import engine as policy_engine
         policy_engine.safe_mode = self.orchestrator.safe_mode
 
         self.model_name_map = {
-            "gemini-3.1-flash-live-preview": "Gemini Live (Cloud)",
+            "gemini-3.8-live": "Gemini 3.8 Live (Primary)",
+            "gemini-3.1-flash-live-preview": "Gemini 3.1 Flash Live (Fallback)",
             "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite (Heavy)",
             "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite (Heavy)",
             "qwen-6gb:latest": "Qwen 2.5 (Local)",
@@ -382,7 +408,11 @@ class ScratchpadWindow(QMainWindow):
         self.session_list = QListWidget()
         self.session_list.setObjectName("session_list")
         self.session_list.itemClicked.connect(self.load_selected_session)
-        sidebar_layout.addWidget(self.session_list)
+        sidebar_layout.addWidget(self.session_list, stretch=1)
+        
+        # Trust & Safety Panel
+        self.trust_safety_panel = self._create_trust_safety_panel()
+        sidebar_layout.addWidget(self.trust_safety_panel)
         
         splitter.addWidget(sidebar_widget)
         
@@ -411,6 +441,40 @@ class ScratchpadWindow(QMainWindow):
         self.heavy_agent_status_label = QLabel("● Heavy Agent: Idle")
         self.heavy_agent_status_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
         top_bar_layout.addWidget(self.heavy_agent_status_label)
+        
+        # Voice Assistant toggle and connection state
+        self.voice_assistant_btn = QPushButton("🎤 Voice Assistant")
+        self.voice_assistant_btn.setCheckable(True)
+        self.voice_assistant_btn.setToolTip("Start/Stop Gemini Live voice assistant")
+        self.voice_assistant_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3b4261;
+                color: #c0caf5;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:checked {
+                background-color: #50fa7b;
+                color: #1a1b26;
+            }
+            QPushButton:hover:!checked {
+                background-color: #4a5072;
+            }
+        """)
+        self.voice_assistant_btn.clicked.connect(self.toggle_voice_assistant)
+        top_bar_layout.addWidget(self.voice_assistant_btn)
+        
+        self.voice_connection_label = QLabel("🔴 Disconnected")
+        self.voice_connection_label.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 11px; margin-left: 5px;")
+        top_bar_layout.addWidget(self.voice_connection_label)
+        
+        # Assistant State Indicator
+        self.assistant_state_label = QLabel("🎙️ Idle")
+        self.assistant_state_label.setStyleSheet("color: #8be9fd; font-weight: bold; font-size: 11px; margin-left: 10px;")
+        top_bar_layout.addWidget(self.assistant_state_label)
         
         top_bar_layout.addStretch()
         
@@ -747,14 +811,15 @@ class ScratchpadWindow(QMainWindow):
 
 
     def start_voice_capture(self):
-        if hasattr(self, 'live_agent') and self.live_agent:
+        # If voice assistant is active, route to Gemini Live
+        if self.voice_assistant_active and self.live_agent:
             self.live_agent.is_recording = True
             self.set_voice_button_state("recording")
             self.voice_in_progress = True
             return
             
+        # Otherwise use local transcription (legacy path)
         if self.voice_in_progress:
-
             return
         
         self.voice_in_progress = True
@@ -800,7 +865,8 @@ class ScratchpadWindow(QMainWindow):
 
 
     def finish_voice_capture(self, force_cancel: bool = False):
-        if hasattr(self, 'live_agent') and self.live_agent:
+        # If voice assistant is active, route to Gemini Live
+        if self.voice_assistant_active and self.live_agent:
             self.live_agent.is_recording = False
             self.set_voice_button_state("idle")
             self.voice_in_progress = False
@@ -1113,8 +1179,35 @@ class ScratchpadWindow(QMainWindow):
                 parent=self,
             )
             from agent.approvals import manager
+            from agent.capabilities import registry as capability_registry
+            from agent.capabilities import CapabilityGrant
+            import uuid
+            from datetime import datetime
             try:
                 if dlg.exec():
+                    if dlg.is_always_allow_checked():
+                        # Create capability grant with constraints matching tool argument names
+                        constraint_dict = {}
+                        if tool_name == "open_application":
+                            constraint_dict["app_name"] = arguments.get("app_name", "")
+                        elif tool_name == "open_website":
+                            constraint_dict["url"] = arguments.get("url", "")
+                        elif tool_name in {"set_volume", "set_brightness"}:
+                            # Use the actual argument name with range constraints
+                            arg_name = "level_percent" if tool_name == "set_volume" else "level_percent"
+                            constraint_dict[arg_name] = {"min": 0, "max": 100}
+                        
+                        grant = CapabilityGrant(
+                            id=str(uuid.uuid4()),
+                            capability=tool_name,
+                            constraints=constraint_dict,
+                            scope="persistent",
+                            enabled=True,
+                            created_at=datetime.now().isoformat()
+                        )
+                        capability_registry.register_grant(grant)
+                        self._refresh_trust_safety_panel()
+                        self.add_system_message_to_feed(f"Capability granted: {tool_name} (persistent)", is_error=False)
                     manager.approve(approval_id)
                 else:
                     manager.reject(approval_id)
@@ -1140,7 +1233,41 @@ class ScratchpadWindow(QMainWindow):
 
         status = html.escape(panel["status"])
         description = html.escape(str(panel["description"]))
-        rendered = [f"<b>Task ({status}):</b> {description}<ul style='list-style-type:none;padding-left:10px;'>"]
+        
+        # Determine Assistant status based on task state
+        assistant_status = "Idle"
+        agent_status = "Idle"
+        
+        if panel["status"] == "running":
+            assistant_status = "Working on that..."
+            if panel["steps"]:
+                current_step = panel["steps"][-1]
+                step_status = current_step.get("status", "running")
+                if step_status == "pending_approval":
+                    agent_status = f"Waiting for approval: {current_step['name']}"
+                elif step_status == "running":
+                    agent_status = f"Executing: {current_step['name']}"
+                elif step_status == "success":
+                    agent_status = f"Completed: {current_step['name']}"
+                elif step_status == "error":
+                    agent_status = f"Error in: {current_step['name']}"
+            else:
+                agent_status = "Starting..."
+        elif panel["status"] == "completed":
+            assistant_status = "Task completed"
+            agent_status = "Done"
+        elif panel["status"] == "failed":
+            assistant_status = "Task failed"
+            agent_status = "Error"
+        
+        rendered = [
+            f"<b>Task ({status}):</b> {description}",
+            f"<div style='margin-top:5px;padding:5px;background:#1a1b26;border-radius:4px;'>",
+            f"  <span style='color:#7aa2f7;'><b>Assistant:</b> {html.escape(assistant_status)}</span><br>",
+            f"  <span style='color:#50fa7b;'><b>Agent:</b> {html.escape(agent_status)}</span>",
+            f"</div>",
+            "<ul style='list-style-type:none;padding-left:10px;margin-top:5px;'>"
+        ]
         for step in panel["steps"]:
             icon = {
                 "success": "✅",
@@ -1154,6 +1281,10 @@ class ScratchpadWindow(QMainWindow):
         panel["bubble"].text_display.setHtml("".join(rendered))
 
     def closeEvent(self, event):
+        # Stop voice assistant if running
+        if self.voice_assistant_active:
+            self.toggle_voice_assistant()
+        
         for worker in tuple(self.agent_workers.values()):
             worker.cancel()
         self.agent_listener.close()
@@ -1162,6 +1293,164 @@ class ScratchpadWindow(QMainWindow):
     @pyqtSlot()
     def finish_voice_capture_sig(self):
         self.finish_voice_capture(force_cancel=False)
+
+    def toggle_voice_assistant(self):
+        """Toggle the Gemini Live voice assistant on/off."""
+        if self.voice_assistant_active:
+            # Stop the voice assistant
+            self.voice_assistant_active = False
+            self.voice_assistant_btn.setChecked(False)
+            self.voice_assistant_btn.setText("🎤 Voice Assistant")
+            self.voice_connection_label.setText("🔴 Disconnected")
+            self.voice_connection_label.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 11px; margin-left: 5px;")
+            
+            if self.live_agent:
+                self.live_agent.stop_event.set()
+                self.live_agent = None
+            if self.live_agent_thread and self.live_agent_thread.is_alive():
+                self.live_agent_thread.join(timeout=5.0)
+                self.live_agent_thread = None
+            
+            self.add_system_message_to_feed("Voice assistant stopped.", is_error=False)
+        else:
+            # Start the voice assistant
+            self.voice_assistant_active = True
+            self.voice_assistant_btn.setChecked(True)
+            self.voice_assistant_btn.setText("🛑 Stop Voice Assistant")
+            self.voice_connection_label.setText("🟡 Connecting...")
+            self.voice_connection_label.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px; margin-left: 5px;")
+            
+            # Start Gemini Live in a background thread
+            from providers.gemini_live import start_agent_in_thread
+            import asyncio
+            
+            def run_live_agent():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    start_agent_in_thread(
+                        volume_cb=self._on_volume_update,
+                        text_cb=self._on_live_text,
+                        state_cb=self._on_live_state,
+                        bubble_cb=self._on_live_bubble,
+                        glow_cb=self._on_live_glow,
+                        assistant_bridge=self.assistant_bridge,
+                        global_agent_ref=[None],  # We'll capture the agent instance
+                    )
+                except Exception as e:
+                    logger = get_logger("ui")
+                    logger.error(f"Gemini Live thread error: {e}")
+                finally:
+                    loop.close()
+            
+            self.live_agent_thread = threading.Thread(target=run_live_agent, daemon=True)
+            self.live_agent_thread.start()
+            
+            # We need to capture the agent instance - poll for it
+            def capture_agent():
+                if self.assistant_bridge._gemini_live_ref:
+                    self.live_agent = self.assistant_bridge._gemini_live_ref
+                    self._update_connection_state(self.live_agent.get_connection_state())
+                else:
+                    QTimer.singleShot(500, capture_agent)
+            
+            QTimer.singleShot(500, capture_agent)
+            self.add_system_message_to_feed("Starting voice assistant...", is_error=False)
+
+    def _update_connection_state(self, state: str):
+        """Update the connection state indicator."""
+        state_colors = {
+            "disconnected": ("🔴 Disconnected", "#ff5555"),
+            "connecting": ("🟡 Connecting...", "#ffb86c"),
+            "connected": ("🟢 Connected", "#50fa7b"),
+            "reconnecting": ("🔄 Reconnecting...", "#ffb86c"),
+            "error": ("🔴 Error", "#ff5555"),
+        }
+        text, color = state_colors.get(state, (state, "#c0caf5"))
+        self.voice_connection_label.setText(text)
+        self.voice_connection_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 5px;")
+
+    @pyqtSlot(AssistantEvent)
+    def _on_assistant_event(self, event: AssistantEvent):
+        """Handle events from the AssistantBridge."""
+        if event.type == "approval_required":
+            # Show approval request in chat
+            msg = f"⚠️ **Approval Required**\nTask: {event.summary}\nRisk: {event.risk}\nApproval ID: {event.approval_id}"
+            self.add_system_message_to_feed(msg, is_error=False)
+        elif event.type == "task_started":
+            self.add_system_message_to_feed(f"🤖 Agent started: {event.summary}", is_error=False)
+        elif event.type == "task_completed":
+            self.add_system_message_to_feed(f"✅ Agent completed: {event.summary}", is_error=False)
+        elif event.type == "task_failed":
+            self.add_system_message_to_feed(f"❌ Agent failed: {event.summary}", is_error=True)
+        elif event.type == "tool_progress":
+            if event.progress:
+                self.add_system_message_to_feed(f"⚙️ {event.progress}", is_error=False)
+        
+        # Also forward to Gemini Live if connected
+        if self.live_agent:
+            self.live_agent.inject_agent_event(event)
+
+    def _on_volume_update(self, volume: float):
+        pass  # Volume updates from Gemini Live
+
+    def _on_live_text(self, role: str, text: str):
+        """Handle text from Gemini Live session."""
+        if role == "model":
+            self.add_system_message_to_feed(f"🎤 {text}", is_error=False)
+        elif role == "user":
+            pass  # User input is handled via push-to-talk
+        elif role == "system":
+            self.add_system_message_to_feed(text, is_error=False)
+
+    def _on_live_state(self, state: str):
+        """Handle connection state changes from Gemini Live."""
+        self._update_connection_state(state)
+        
+        # Update assistant state indicator
+        state_map = {
+            "idle": ("🎙️ Idle", "#8be9fd"),
+            "listening": ("🎙️ Listening", "#50fa7b"),
+            "thinking": ("🤔 Thinking", "#ffb86c"),
+            "talking": ("🔊 Speaking", "#ff79c6"),
+            "connecting": ("🔄 Connecting...", "#ffb86c"),
+            "reconnecting": ("🔄 Reconnecting...", "#ffb86c"),
+            "connected": ("🎙️ Ready", "#50fa7b"),
+            "disconnected": ("🔴 Disconnected", "#ff5555"),
+            "error": ("🔴 Error", "#ff5555"),
+        }
+        text, color = state_map.get(state, (state, "#c0caf5"))
+        if hasattr(self, 'assistant_state_label'):
+            self.assistant_state_label.setText(text)
+            self.assistant_state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 10px;")
+
+    def _on_live_bubble(self, text: str):
+        """Handle bubble messages from Gemini Live."""
+        pass
+
+    def _on_live_glow(self, state: str):
+        """Handle glow state from Gemini Live - sync with visualizer."""
+        if self.visualizer_glow_emitter:
+            self.visualizer_glow_emitter.glow_changed.emit(state)
+        # Also update assistant state from glow
+        glow_to_state = {
+            "connected": "idle",
+            "connecting": "connecting",
+            "thinking": "thinking",
+            "vision": "thinking",
+        }
+        if state in glow_to_state and hasattr(self, 'assistant_state_label'):
+            mapped_state = glow_to_state[state]
+            state_map = {
+                "idle": ("🎙️ Idle", "#8be9fd"),
+                "listening": ("🎙️ Listening", "#50fa7b"),
+                "thinking": ("🤔 Thinking", "#ffb86c"),
+                "talking": ("🔊 Speaking", "#ff79c6"),
+                "connecting": ("🔄 Connecting...", "#ffb86c"),
+            }
+            text, color = state_map.get(mapped_state, (mapped_state, "#c0caf5"))
+            self.assistant_state_label.setText(text)
+            self.assistant_state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 10px;")
 
     def toggle_window_visibility(self):
         if self.isVisible():
@@ -1174,3 +1463,297 @@ class ScratchpadWindow(QMainWindow):
         visible = not self.terminal_text_area.isVisible()
         self.terminal_text_area.setVisible(visible)
         self.terminal_toggle_btn.setText("▼ Heavy Agent Logs" if visible else "▶ Heavy Agent Logs")
+
+    # --- Trust & Safety Panel ---
+    def _create_trust_safety_panel(self):
+        """Create the Trust & Safety panel for capability grant management."""
+        from PyQt6.QtWidgets import QGroupBox, QVBoxLayout, QLabel, QPushButton, QScrollArea, QWidget
+        
+        group = QGroupBox("🛡️ Trust & Safety")
+        group.setStyleSheet("""
+            QGroupBox {
+                color: #7aa2f7;
+                font-weight: bold;
+                border: 1px solid #3b4261;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 15px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(10, 20, 10, 10)
+        layout.setSpacing(8)
+        
+        # Always Allowed section
+        self.always_allowed_label = QLabel("<b>Always Allowed</b>")
+        self.always_allowed_label.setStyleSheet("color: #50fa7b; font-size: 12px;")
+        layout.addWidget(self.always_allowed_label)
+        
+        self.always_allowed_container = QWidget()
+        self.always_allowed_layout = QVBoxLayout(self.always_allowed_container)
+        self.always_allowed_layout.setContentsMargins(0, 0, 0, 0)
+        self.always_allowed_layout.setSpacing(4)
+        layout.addWidget(self.always_allowed_container)
+        
+        # Ask When Needed section
+        self.ask_needed_label = QLabel("<b>Ask When Needed</b>")
+        self.ask_needed_label.setStyleSheet("color: #ffb86c; font-size: 12px;")
+        layout.addWidget(self.ask_needed_label)
+        
+        self.ask_needed_container = QWidget()
+        self.ask_needed_layout = QVBoxLayout(self.ask_needed_container)
+        self.ask_needed_layout.setContentsMargins(0, 0, 0, 0)
+        self.ask_needed_layout.setSpacing(4)
+        layout.addWidget(self.ask_needed_container)
+        
+        # Blocked section
+        self.blocked_label = QLabel("<b>Blocked</b>")
+        self.blocked_label.setStyleSheet("color: #ff5555; font-size: 12px;")
+        layout.addWidget(self.blocked_label)
+        
+        self.blocked_container = QWidget()
+        self.blocked_layout = QVBoxLayout(self.blocked_container)
+        self.blocked_layout.setContentsMargins(0, 0, 0, 0)
+        self.blocked_layout.setSpacing(4)
+        layout.addWidget(self.blocked_container)
+        
+        # Refresh button
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3b4261;
+                color: #c0caf5;
+                border: none;
+                border-radius: 6px;
+                padding: 6px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #4a5072;
+            }
+        """)
+        refresh_btn.clicked.connect(self._refresh_trust_safety_panel)
+        layout.addWidget(refresh_btn)
+        
+        self._refresh_trust_safety_panel()
+        return group
+
+    def _refresh_trust_safety_panel(self):
+        """Refresh the Trust & Safety panel with current capability grants."""
+        # Clear existing widgets
+        for layout in [self.always_allowed_layout, self.ask_needed_layout, self.blocked_layout]:
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+        
+        from agent.capabilities import registry as capability_registry
+        grants = capability_registry.get_all_grants()
+        
+        # Capabilities that are considered "Always Allowed" (have grants)
+        granted_capabilities = set(g.capability for g in grants)
+        
+        # All desktop capabilities
+        all_capabilities = {
+            "open_application": "Open Application",
+            "open_website": "Open Website",
+            "set_volume": "Set Volume",
+            "set_brightness": "Set Brightness",
+            "get_clipboard": "Get Clipboard",
+            "search_and_play_youtube": "Search & Play YouTube",
+        }
+        
+        # Always Allowed - capabilities with active grants
+        for cap_id, cap_name in all_capabilities.items():
+            if cap_id in granted_capabilities:
+                grant = next(g for g in grants if g.capability == cap_id)
+                scope_badge = " [Persistent]" if grant.scope == "persistent" else " [Session]"
+                btn = QPushButton(f"✅ {cap_name}{scope_badge}")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #1a2a1a;
+                        color: #50fa7b;
+                        border: 1px solid #50fa7b;
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        font-size: 11px;
+                        text-align: left;
+                    }
+                    QPushButton:hover {
+                        background-color: #2a3a2a;
+                    }
+                """)
+                btn.setProperty("grant_id", grant.id)
+                btn.clicked.connect(lambda checked, gid=grant.id: self._revoke_grant(gid))
+                self.always_allowed_layout.addWidget(btn)
+        
+        # Ask When Needed - capabilities without grants (medium/high risk)
+        ask_needed = {"open_application", "open_website", "search_and_play_youtube"}
+        for cap_id in ask_needed:
+            if cap_id not in granted_capabilities:
+                cap_name = all_capabilities[cap_id]
+                btn = QPushButton(f"⚠️ {cap_name}")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2a2a1a;
+                        color: #ffb86c;
+                        border: 1px solid #ffb86c;
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        font-size: 11px;
+                        text-align: left;
+                    }
+                    QPushButton:hover {
+                        background-color: #3a3a2a;
+                    }
+                """)
+                btn.setProperty("capability", cap_id)
+                btn.clicked.connect(lambda checked, cid=cap_id: self._show_grant_dialog(cid))
+                self.ask_needed_layout.addWidget(btn)
+        
+        # Low risk capabilities that don't typically need approval
+        low_risk = {"set_volume", "set_brightness", "get_clipboard"}
+        for cap_id in low_risk:
+            if cap_id not in granted_capabilities:
+                cap_name = all_capabilities[cap_id]
+                btn = QPushButton(f"⚠️ {cap_name} (auto-approved in safe mode)")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2a2a1a;
+                        color: #ffb86c;
+                        border: 1px solid #ffb86c;
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        font-size: 11px;
+                        text-align: left;
+                    }
+                """)
+                btn.setEnabled(False)
+                self.ask_needed_layout.addWidget(btn)
+        
+        # Blocked - shell commands, file writes, etc.
+        blocked_items = [
+            ("execute_shell", "Execute Shell Commands"),
+            ("write_file", "Write Files"),
+            ("read_file", "Read Files (outside workspace)"),
+        ]
+        for cap_id, cap_name in blocked_items:
+            btn = QPushButton(f"🚫 {cap_name}")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #2a1a1a;
+                    color: #ff5555;
+                    border: 1px solid #ff5555;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 11px;
+                    text-align: left;
+                }
+            """)
+            btn.setEnabled(False)
+            self.blocked_layout.addWidget(btn)
+
+    def _revoke_grant(self, grant_id: str):
+        """Revoke a capability grant."""
+        from agent.capabilities import registry as capability_registry
+        if capability_registry.revoke_grant(grant_id):
+            self._refresh_trust_safety_panel()
+            self.add_system_message_to_feed(f"Capability grant revoked: {grant_id}", is_error=False)
+
+    def _show_grant_dialog(self, capability: str):
+        """Show dialog to grant a capability."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QHBoxLayout
+        from datetime import datetime, timedelta
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Grant Capability: {capability}")
+        dialog.setStyleSheet("background-color: #1a1b26; color: #c0caf5;")
+        layout = QVBoxLayout(dialog)
+        
+        layout.addWidget(QLabel(f"Grant permission for: <b>{capability}</b>"))
+        
+        scope_combo = QComboBox()
+        scope_combo.addItem("Session Only (expires on restart)", "session")
+        scope_combo.addItem("Persistent (survives restart)", "persistent")
+        layout.addWidget(QLabel("Scope:"))
+        layout.addWidget(scope_combo)
+        
+        # Constraints based on capability
+        constraints = {}
+        if capability == "open_application":
+            from PyQt6.QtWidgets import QLineEdit
+            app_input = QLineEdit()
+            app_input.setPlaceholderText("App name (e.g., chrome) - leave empty for any")
+            layout.addWidget(QLabel("Constraint - App Name:"))
+            layout.addWidget(app_input)
+            constraints["app_input"] = app_input
+        elif capability == "open_website":
+            from PyQt6.QtWidgets import QLineEdit
+            url_input = QLineEdit()
+            url_input.setPlaceholderText("Domain/URL (e.g., youtube.com) - leave empty for any")
+            layout.addWidget(QLabel("Constraint - URL/Domain:"))
+            layout.addWidget(url_input)
+            constraints["url_input"] = url_input
+        elif capability in {"set_volume", "set_brightness"}:
+            from PyQt6.QtWidgets import QSpinBox
+            min_spin = QSpinBox()
+            min_spin.setRange(0, 100)
+            min_spin.setValue(0)
+            max_spin = QSpinBox()
+            max_spin.setRange(0, 100)
+            max_spin.setValue(100)
+            layout.addWidget(QLabel("Min Value:"))
+            layout.addWidget(min_spin)
+            layout.addWidget(QLabel("Max Value:"))
+            layout.addWidget(max_spin)
+            constraints["min_spin"] = min_spin
+            constraints["max_spin"] = max_spin
+        
+        btn_layout = QHBoxLayout()
+        grant_btn = QPushButton("Grant")
+        grant_btn.setStyleSheet("background-color: #50fa7b; color: #1a1b26; font-weight: bold; padding: 8px; border-radius: 6px;")
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("background-color: #ff5555; color: white; padding: 8px; border-radius: 6px;")
+        btn_layout.addWidget(grant_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        def on_grant():
+            from agent.capabilities import registry as capability_registry
+            import uuid
+            
+            constraint_dict = {}
+            if capability == "open_application":
+                val = constraints["app_input"].text().strip()
+                if val:
+                    constraint_dict["app_name"] = val
+            elif capability == "open_website":
+                val = constraints["url_input"].text().strip()
+                if val:
+                    constraint_dict["url"] = val
+            elif capability in {"set_volume", "set_brightness"}:
+                constraint_dict["min"] = constraints["min_spin"].value()
+                constraint_dict["max"] = constraints["max_spin"].value()
+            
+            grant = CapabilityGrant(
+                id=str(uuid.uuid4()),
+                capability=capability,
+                constraints=constraint_dict,
+                scope=scope_combo.currentData(),
+                enabled=True,
+                created_at=datetime.now().isoformat()
+            )
+            capability_registry.register_grant(grant)
+            self._refresh_trust_safety_panel()
+            self.add_system_message_to_feed(f"Capability granted: {capability}", is_error=False)
+            dialog.accept()
+        
+        grant_btn.clicked.connect(on_grant)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        dialog.exec()

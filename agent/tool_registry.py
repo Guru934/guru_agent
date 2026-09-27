@@ -2,7 +2,10 @@ from typing import Dict, Any, Callable, Optional
 from dataclasses import dataclass
 from tools.shell import execute_bash_command, ripgrep_search_impl
 from tools.filesystem import read_file, write_file_content
-from tools.desktop import handle_desktop_action
+from tools.desktop import (
+    open_application, open_website, set_volume, set_brightness,
+    get_clipboard, search_and_play_youtube, handle_desktop_action
+)
 from tools.browser import describe_active_window, describe_current_screen
 
 @dataclass
@@ -151,8 +154,97 @@ registry.register(ToolSpec(
 ))
 
 registry.register(ToolSpec(
+    name="open_application",
+    description="Open a desktop application by name (e.g., 'chrome', 'code', 'terminal').",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "app_name": {"type": "string", "description": "Name of the application to open"}
+        },
+        "required": ["app_name"],
+        "additionalProperties": False,
+    },
+    risk="high",
+    handler=lambda app_name: open_application(app_name)
+))
+
+registry.register(ToolSpec(
+    name="open_website",
+    description="Open a website URL in the default browser.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "URL to open (e.g., 'https://youtube.com')"}
+        },
+        "required": ["url"],
+        "additionalProperties": False,
+    },
+    risk="high",
+    handler=lambda url: open_website(url)
+))
+
+registry.register(ToolSpec(
+    name="set_volume",
+    description="Set system volume level (0-100).",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "level_percent": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Volume level 0-100"}
+        },
+        "required": ["level_percent"],
+        "additionalProperties": False,
+    },
+    risk="medium",
+    handler=lambda level_percent: set_volume(level_percent)
+))
+
+registry.register(ToolSpec(
+    name="set_brightness",
+    description="Set screen brightness level (0-100).",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "level_percent": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Brightness level 0-100"}
+        },
+        "required": ["level_percent"],
+        "additionalProperties": False,
+    },
+    risk="medium",
+    handler=lambda level_percent: set_brightness(level_percent)
+))
+
+registry.register(ToolSpec(
+    name="get_clipboard",
+    description="Get the current clipboard contents.",
+    input_schema={
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    },
+    risk="low",
+    handler=lambda: get_clipboard()
+))
+
+registry.register(ToolSpec(
+    name="search_and_play_youtube",
+    description="Search YouTube and play the first result.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query for YouTube"}
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+    risk="high",
+    handler=lambda query: search_and_play_youtube(query)
+))
+
+# Legacy fallback - kept for backward compatibility
+registry.register(ToolSpec(
     name="desktop_action",
-    description="Perform a supported desktop action such as opening an application or website, or setting volume or brightness.",
+    description="[Legacy] Perform a desktop action from free-text request. Use granular tools instead.",
     input_schema={
         "type": "object",
         "properties": {

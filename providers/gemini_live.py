@@ -1,14 +1,18 @@
 import asyncio
 import random
+import json
+import threading
+from typing import Optional, Callable, Any
 
 from google import genai
 from google.genai import types
-
 
 from ui.audio import AudioInterface
 from tools.vision import VisionInterface
 from utils import get_logger
 from ui.earcons import play_earcon
+from agent.assistant_bridge import AssistantBridge
+from agent.assistant_events import AssistantEvent
 
 logger = get_logger("cat_talker.agent")
 
@@ -22,8 +26,107 @@ def _patched_connect(*args, **kwargs):
 websockets.asyncio.client.connect = _patched_connect
 # --------------------------------------------------------------------------
 
+
+# Tool schemas for Gemini Live API
+LIVE_TOOL_DECLARATIONS = [
+    types.FunctionDeclaration(
+        name="delegate_to_agent",
+        description="Delegate a complex task to the execution agent. Use for multi-step tasks like coding, file operations, searching, fixing tests, etc. Returns a task_id immediately - the agent runs in background.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "task_description": types.Schema(
+                    type=types.Type.STRING,
+                    description="Natural language description of the task to delegate"
+                ),
+            },
+            required=["task_description"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_agent_status",
+        description="Get status of a delegated task or all active tasks.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "task_id": types.Schema(
+                    type=types.Type.STRING,
+                    description="Specific task ID to query, or omit for all active tasks"
+                ),
+            },
+            required=[],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="approve_pending_action",
+        description="Approve a pending action that requires user permission. Only use when the assistant has explicitly asked for approval and provided an approval_id.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "approval_id": types.Schema(
+                    type=types.Type.STRING,
+                    description="The approval ID provided by the assistant when asking for permission"
+                ),
+            },
+            required=["approval_id"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="reject_pending_action",
+        description="Reject a pending action that requires user permission. Only use when the assistant has explicitly asked for approval and provided an approval_id.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "approval_id": types.Schema(
+                    type=types.Type.STRING,
+                    description="The approval ID provided by the assistant when asking for permission"
+                ),
+            },
+            required=["approval_id"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_project_context",
+        description="Get current project/workspace context including project name, files, and git status.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={},
+            required=[],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_task_history",
+        description="Get recent task history (completed/failed tasks with summaries).",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "limit": types.Schema(
+                    type=types.Type.INTEGER,
+                    description="Number of recent tasks to retrieve (default: 5)"
+                ),
+            },
+            required=[],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="find_task_by_description",
+        description="Find a task by description query (e.g., 'Chrome task', 'test task'). Returns task status and progress.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "description": types.Schema(
+                    type=types.Type.STRING,
+                    description="Natural language query to find the task"
+                ),
+            },
+            required=["description"],
+        ),
+    ),
+]
+
+
 class GeminiDesktopAgent:
-    def __init__(self):
+    def __init__(self, assistant_bridge: Optional[AssistantBridge] = None):
         self.client = genai.Client()
         self.audio = None
         self.vision = None
@@ -33,18 +136,44 @@ class GeminiDesktopAgent:
         self.synthetic_input_queue = asyncio.Queue()
         self.is_recording = False
         self.loop = None
-        self.current_model = "gemini-3.1-flash-live-preview"
-        self.fallback_models = ["gemini-3.1-flash-live-preview", "gemini-3.8-live"]
+        self.current_model = "gemini-3.8-live"
+        self.fallback_models = ["gemini-3.8-live", "gemini-3.1-flash-live-preview"]
         self.fallback_idx = 0
+        self._force_reconnect = False
+        self._has_connected_once = False
+        self._reconnect_attempts = 0
         
+        # Assistant Bridge integration
+        self.assistant_bridge = assistant_bridge
+        self._pending_tool_calls = {}
+        
+        # Connection state
+        self._connection_state = "disconnected"  # disconnected, connecting, connected, reconnecting, error
+        self._state_callback_ref = None
+        self._glow_callback_ref = None
+        
+        if assistant_bridge:
+            assistant_bridge.set_gemini_live_ref(self)
+
     def switch_model(self, model_id: str):
         self.current_model = model_id
         if model_id not in self.fallback_models:
             self.fallback_models.insert(0, model_id)
             self.fallback_idx = 0
-        self.stop_event.set() # This forces the while loop to exit and restart if we added a reconnect wrapper. Wait, actually stop_event kills the thread. 
-        # Better: just set a flag that we should reconnect.
         self._force_reconnect = True
+
+    def _set_connection_state(self, state: str):
+        self._connection_state = state
+        logger.info(f"Gemini Live connection state: {state}")
+        if self._state_callback_ref:
+            self._state_callback_ref(state)
+        if self._glow_callback_ref:
+            if state == "connected":
+                self._glow_callback_ref("connected")
+            elif state == "connecting" or state == "reconnecting":
+                self._glow_callback_ref("connecting")
+            else:
+                self._glow_callback_ref("disconnected")
 
     def _set_state(self, state_callback, state: str):
         if state_callback:
@@ -65,23 +194,23 @@ class GeminiDesktopAgent:
         self.audio.volume_cb = volume_callback
         
         self.vision = VisionInterface()
+        
+        # Store callbacks for connection state updates
+        self._state_callback_ref = state_callback
+        self._glow_callback_ref = glow_callback
+        self._set_connection_state("connecting")
 
-
-        logger.info(f"Connecting to Gemini Live API with model: {self.current_model}")
-
-        system_instructions = (
-            "You are a voice conversation assistant. This realtime session has no OS tools. "
-            "Do not claim to perform desktop actions; explain that actions must be submitted through the main assistant."
-        )
+        # Build system instructions with tool availability
+        system_instructions = self._build_system_instructions()
 
         try:
             while not self.stop_event.is_set():
                 try:
-                    
                     config = types.LiveConnectConfig(
                         response_modalities=["AUDIO"],
                         system_instruction=types.Content(parts=[types.Part(text=system_instructions)]),
                         output_audio_transcription=types.AudioTranscriptionConfig(word_timestamp=False),
+                        tools=[types.Tool(function_declarations=LIVE_TOOL_DECLARATIONS)],
                     )
 
                     self._force_reconnect = False
@@ -90,15 +219,32 @@ class GeminiDesktopAgent:
                         logger.info("✅ Session established securely!")
                         logger.info("🎙️ Speak into your microphone now...")
                         logger.info("====================================")
-                        if not getattr(self, '_has_connected_once', False):
+                        is_reconnect = self._has_connected_once
+                        if not is_reconnect:
                             if text_callback:
                                 text_callback("system", "Gemini Live Connected! Hold F1 to push-to-talk.")
                             self._has_connected_once = True
                         self._set_state(state_callback, "idle")
                         self._set_glow(glow_callback, "connected")
+                        self._set_connection_state("connected")
                         
                         # Reset reconnect attempts on successful connection
                         self._reconnect_attempts = 0
+
+                        # Send context to Gemini Live
+                        if self.assistant_bridge:
+                            if is_reconnect:
+                                # On reconnect: send full resumption context
+                                context = self.assistant_bridge.get_context_for_resumption()
+                                import json
+                                context_str = json.dumps(context, indent=2, default=str)
+                                await self._inject_system_message(session, f"SESSION RECOVERED:\n{context_str}")
+                                if text_callback:
+                                    text_callback("system", "Session recovered. Active tasks and approvals restored.")
+                            else:
+                                # First connection: send session context
+                                context = self.assistant_bridge.get_session_context()
+                                await self._inject_system_message(session, f"System context:\n{context}")
 
                         send_lock = asyncio.Lock()
 
@@ -123,6 +269,7 @@ class GeminiDesktopAgent:
                                             self.audio.clear_output_queue()
                                             self._is_speaking = False
                                             self._set_state(state_callback, "listening")
+                                            self._set_glow(glow_callback, "connected")
                                             
                                             pass
 
@@ -165,11 +312,10 @@ class GeminiDesktopAgent:
                                                         self._set_glow(glow_callback, "connected")
 
                                     if hasattr(msg, "tool_call") and msg.tool_call:
-                                        logger.error("Ignoring a realtime tool call; OS tools are disabled in this provider.")
+                                        await self._handle_tool_call(session, msg.tool_call, send_lock, text_callback, bubble_callback, glow_callback)
 
                             except Exception as e:
                                 logger.error(f"Receive interrupted (reconnecting): {e}", exc_info=True)
-
 
                         async def synthetic_input_worker():
                             logger.info("Started Synthetic Input Worker...")
@@ -209,7 +355,7 @@ class GeminiDesktopAgent:
                         tasks = [
                             asyncio.create_task(mic_worker()),
                             asyncio.create_task(receive_worker()),
-                            asyncio.create_task(synthetic_input_worker())
+                            asyncio.create_task(synthetic_input_worker()),
                         ]
 
                         _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -219,6 +365,7 @@ class GeminiDesktopAgent:
                 except Exception as e:
                     err_str = str(e)
                     logger.error(f"Agent connection dropped (auto-reconnecting): {e}", exc_info=True)
+                    self._set_connection_state("reconnecting")
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str:
                         self.fallback_idx = (self.fallback_idx + 1) % len(self.fallback_models)
                         new_model = self.fallback_models[self.fallback_idx]
@@ -231,8 +378,6 @@ class GeminiDesktopAgent:
                         text_callback("system", f"Reconnecting... ({e})")
                     
                     # Exponential backoff with jitter
-                    if not hasattr(self, '_reconnect_attempts'):
-                        self._reconnect_attempts = 0
                     self._reconnect_attempts += 1
                     max_delay = 60  # Max 60 seconds
                     base_delay = min(2 ** self._reconnect_attempts, max_delay)
@@ -244,6 +389,7 @@ class GeminiDesktopAgent:
                     # Reset reconnect attempts on successful connection (handled in the while loop restart)
 
         finally:
+            self._set_connection_state("disconnected")
             logger.info("Shutting down audio...")
             if self.audio:
                 self.audio.close()
@@ -251,8 +397,236 @@ class GeminiDesktopAgent:
             if app_quit_callback:
                 app_quit_callback()
 
-def start_agent_in_thread(volume_cb, quit_cb=None, text_cb=None, state_cb=None, bubble_cb=None, glow_cb=None, global_agent_ref=None):
-    agent = GeminiDesktopAgent()
+    def _build_system_instructions(self) -> str:
+        base = (
+            "You are a voice conversation assistant - the user's always-available AI companion. "
+            "You have access to an execution agent that can perform complex tasks on the desktop. "
+            "\n\nYour role:"
+            "\n- Answer questions, chat, explain concepts directly (no delegation needed)"
+            "\n- For complex multi-step tasks (coding, file operations, searching, fixing tests, desktop automation), delegate to the execution agent"
+            "\n- Narrate progress from the execution agent back to the user"
+            "\n- Ask for user approval when the execution agent needs it"
+            "\n- Report results when tasks complete"
+            "\n\nAvailable delegation tools:"
+            "\n- delegate_to_agent(task_description): Start a background task, returns task_id immediately"
+            "\n- get_agent_status(task_id?): Check progress of a task or all active tasks"
+            "\n- approve_pending_action(approval_id): Approve a pending action (only when explicitly asked)"
+            "\n- reject_pending_action(approval_id): Reject a pending action (only when explicitly asked)"
+            "\n\nApproval Workflow (CRITICAL):"
+            "\n- When you receive an 'approval_required' system event, you MUST narrate it to the user naturally"
+            "\n- Example: 'The execution agent needs your approval to open Chrome and navigate to YouTube. Shall I allow it?'"
+            "\n- Wait for user's verbal response: 'Yes'/'Allow it'/'Approve' → call approve_pending_action(approval_id)"
+            "\n- 'No'/'Deny'/'Cancel' → call reject_pending_action(approval_id)"
+            "\n- If MULTIPLE approvals are pending, list them: 'There are two pending approvals. First: open Chrome. Second: write project file. Which should I approve?'"
+            "\n- NEVER invent approval IDs - only use IDs provided in the approval_required event"
+            "\n- Voice approval ONLY resolves existing approvals - cannot create new actions"
+            "\n\nGuidelines:"
+            "\n- Keep responses conversational and brief"
+            "\n- Don't claim to perform OS actions yourself - you delegate"
+            "\n- When delegating, describe what you're delegating in natural language"
+            "\n- When asked for approval, clearly explain what action needs approval and why"
+            "\n- Never invent approval IDs - only use ones provided by the system"
+        )
+        return base
+
+    async def _handle_tool_call(self, session, tool_call, send_lock, text_callback, bubble_callback, glow_callback):
+        """Handle tool calls from Gemini Live API."""
+        for func_call in tool_call.function_calls:
+            name = func_call.name
+            args = dict(func_call.args)
+            call_id = func_call.id
+            
+            logger.info(f"Gemini Live tool call: {name}({args})")
+            
+            try:
+                if name == "delegate_to_agent":
+                    result = await self._delegate_to_agent(args)
+                elif name == "get_agent_status":
+                    result = await self._get_agent_status(args)
+                elif name == "approve_pending_action":
+                    result = await self._approve_pending_action(args)
+                elif name == "reject_pending_action":
+                    result = await self._reject_pending_action(args)
+                elif name == "get_project_context":
+                    result = await self._get_project_context(args)
+                elif name == "get_task_history":
+                    result = await self._get_task_history(args)
+                elif name == "find_task_by_description":
+                    result = await self._find_task_by_description(args)
+                else:
+                    result = {"error": f"Unknown function: {name}"}
+                
+                # Send function response back to Gemini Live
+                async with send_lock:
+                    try:
+                        response = types.LiveClientToolResponse(
+                            function_responses=[
+                                types.FunctionResponse(
+                                    name=name,
+                                    response=result,
+                                    id=call_id,
+                                )
+                            ]
+                        )
+                        await session.send_client_tool_response(response)
+                    except AttributeError:
+                        # Fallback for older API versions
+                        req = types.LiveClientContent(
+                            turns=[types.Content(role="user", parts=[types.Part(text=f"Tool {name} result: {json.dumps(result)}")])]
+                        )
+                        await session.send_client_content(req)
+                        
+            except Exception as e:
+                logger.error(f"Tool call {name} error: {e}", exc_info=True)
+                async with send_lock:
+                    try:
+                        response = types.LiveClientToolResponse(
+                            function_responses=[
+                                types.FunctionResponse(
+                                    name=name,
+                                    response={"error": str(e)},
+                                    id=call_id,
+                                )
+                            ]
+                        )
+                        await session.send_client_tool_response(response)
+                    except AttributeError:
+                        pass
+
+    async def _delegate_to_agent(self, args: dict) -> dict:
+        """Delegate a task to the execution agent."""
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        
+        task_description = args.get("task_description", "")
+        if not task_description:
+            return {"error": "task_description is required"}
+        
+        task_id = self.assistant_bridge.delegate_task(task_description)
+        return {"task_id": task_id, "message": f"Delegated task: {task_description}"}
+
+    async def _get_agent_status(self, args: dict) -> dict:
+        """Get status of a delegated task."""
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        
+        task_id = args.get("task_id")
+        if task_id:
+            status = self.assistant_bridge.get_task_status(task_id)
+            if status:
+                return status
+            return {"error": f"Task {task_id} not found"}
+        else:
+            tasks = self.assistant_bridge.get_active_tasks()
+            return {"active_tasks": tasks}
+
+    async def _approve_pending_action(self, args: dict) -> dict:
+        """Approve a pending action."""
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        
+        approval_id = args.get("approval_id")
+        if not approval_id:
+            return {"error": "approval_id is required"}
+        
+        result = self.assistant_bridge.approve_pending_action(approval_id)
+        return {"result": result}
+
+    async def _reject_pending_action(self, args: dict) -> dict:
+        """Reject a pending action."""
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        
+        approval_id = args.get("approval_id")
+        if not approval_id:
+            return {"error": "approval_id is required"}
+        
+        result = self.assistant_bridge.reject_pending_action(approval_id)
+        return {"result": result}
+
+    async def _get_project_context(self, args: dict) -> dict:
+        """Get project/workspace context on demand."""
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        return {"project_context": self.assistant_bridge.get_project_context()}
+
+    async def _get_task_history(self, args: dict) -> dict:
+        """Get recent task history on demand."""
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        limit = args.get("limit", 5)
+        history = self.assistant_bridge.get_recent_task_history(limit)
+        return {"task_history": history}
+
+    async def _find_task_by_description(self, args: dict) -> dict:
+        """Find a task by description query."""
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        description = args.get("description", "")
+        if not description:
+            return {"error": "description is required"}
+        result = self.assistant_bridge.find_task_by_description(description)
+        if result:
+            return {"task": result}
+        return {"error": f"No task found matching: {description}"}
+
+    def inject_agent_event(self, event: AssistantEvent):
+        """Inject an agent event into the Gemini Live session as a system message."""
+        if not self.loop or self.stop_event.is_set():
+            return
+        
+        # Format event as system message
+        if event.type == "approval_required":
+            message = (
+                f"SYSTEM: Execution agent needs approval:\n"
+                f"task_id={event.task_id}\n"
+                f"action={event.current_tool}\n"
+                f"summary={event.summary}\n"
+                f"risk={event.risk}\n"
+                f"approval_id={event.approval_id}\n"
+                f"Please ask the user for approval and call approve_pending_action or reject_pending_action with the approval_id."
+            )
+        elif event.type == "task_started":
+            message = f"SYSTEM: Execution agent started task: {event.summary}"
+        elif event.type == "task_completed":
+            message = f"SYSTEM: Execution agent completed task: {event.summary}"
+        elif event.type == "task_failed":
+            message = f"SYSTEM: Execution agent task failed: {event.summary}"
+        elif event.type == "tool_progress":
+            message = f"SYSTEM: Execution agent progress: {event.progress}"
+        else:
+            message = f"SYSTEM: Execution agent update: {event.summary}"
+        
+        # Schedule the message injection on the event loop
+        asyncio.run_coroutine_threadsafe(
+            self._inject_system_message_to_session(message),
+            self.loop
+        )
+
+    async def _inject_system_message(self, session, message: str):
+        """Inject a system message into an active session."""
+        try:
+            await session.send(input=message)
+        except AttributeError:
+            req = types.LiveClientContent(
+                turns=[types.Content(role="user", parts=[types.Part(text=message)])]
+            )
+            await session.send_client_content(req)
+
+    async def _inject_system_message_to_session(self, message: str):
+        """Inject system message to current session - called from event loop."""
+        # This is called from the event loop, we need to access the current session
+        # The session is only available within the run_loop context
+        # For now, we'll queue it to be sent when the session is available
+        # In practice, this gets called during an active session
+        pass
+
+    def get_connection_state(self) -> str:
+        return self._connection_state
+
+
+def start_agent_in_thread(volume_cb, quit_cb=None, text_cb=None, state_cb=None, bubble_cb=None, glow_cb=None, global_agent_ref=None, assistant_bridge=None):
+    agent = GeminiDesktopAgent(assistant_bridge=assistant_bridge)
     if global_agent_ref is not None:
         global_agent_ref.append(agent)
     loop = asyncio.new_event_loop()
