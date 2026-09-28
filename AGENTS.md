@@ -211,8 +211,8 @@ Before editing, identify:
 
 ## Current Work
 
-M0 — Stabilize is complete. The next milestone, M1 — Repo Awareness, is not
-started. Do not begin M1 unless explicitly requested.
+M0 — Stabilize and M1 — Repo Awareness are complete. M2 — Coding Tools is the
+next milestone and is not started. Do not begin M2 unless explicitly requested.
 
 Follow `PROJECT_STATUS.md` for current milestone state and `ROADMAP.md` for
 milestone scope and acceptance criteria.

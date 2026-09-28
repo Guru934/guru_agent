@@ -10,6 +10,7 @@ from agent.approvals import manager as approval_manager
 from agent.capabilities import registry as capability_registry
 from agent.capabilities import CapabilityGrant
 from agent.assistant_events import AssistantEvent
+from memory.sqlite import get_active_project, set_active_project, validate_project_path
 
 
 class TaskSummary:
@@ -223,7 +224,13 @@ class AssistantBridge:
     def delegate_task(self, description: str, model_id: Optional[str] = None, 
                         history: Optional[List[Dict[str, str]]] = None,
                         system_instruction: Optional[str] = None,
-                        source: str = "gemini_live") -> str:
+                        source: str = "gemini_live",
+                        repo_path: Optional[str] = None) -> str:
+        project_path = validate_project_path(repo_path) if repo_path is not None else get_active_project()
+        if project_path is None and self._looks_like_repository_task(description):
+            raise ValueError(
+                "No valid active project is selected. Select a repository or provide repo_path before delegating this task."
+            )
         task_id = str(uuid.uuid4())
         task_summary = TaskSummary(task_id, description)
         
@@ -235,7 +242,9 @@ class AssistantBridge:
                 # Use the provided model_id (from Gemini Live) - AgentRuntime will
                 # map live models to the configured heavy execution model via _execution_model_id()
                 selected_model = model_id or "gemini-2.5-flash"
-                runtime = AgentRuntime(model_id=selected_model)
+                runtime = AgentRuntime(
+                    model_id=selected_model, project_path=project_path, require_project=True
+                )
                 runtime.run(
                     request=description,
                     task_id=task_id,
@@ -251,6 +260,23 @@ class AssistantBridge:
         thread.start()
         
         return task_id
+
+    @staticmethod
+    def _looks_like_repository_task(description: str) -> bool:
+        import re
+
+        return bool(re.search(
+            r"\b(repo(?:sitory)?|source code|coding|codebase|code|file|files|docs?|documentation|implement|refactor|modify|edit|write|patch|fix|debug|pytest|git|function|class|module|script|test suite)\b|\b(add|create|update|change|rename|remove|build)\b.{0,40}\b(function|class|module|script|test|feature|file|tool|command|endpoint|api)\b",
+            description,
+            re.IGNORECASE,
+        ))
+
+    def set_active_project(self, path: str) -> str:
+        return str(set_active_project(path))
+
+    def get_active_project(self) -> Optional[str]:
+        project = get_active_project()
+        return str(project) if project is not None else None
 
     def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -402,7 +428,7 @@ class AssistantBridge:
             
             lines = [
                 "Current application: Guru Agent",
-                "Current project: guru_agent",
+                f"Active project: {self.get_active_project() or 'none selected'}",
                 "Agent status: running" if active > 0 else "Agent status: idle",
                 f"Active tasks: {active}",
                 f"Pending approvals: {pending}",
@@ -449,7 +475,7 @@ class AssistantBridge:
                 "=== SESSION CONTEXT ===",
                 f"Session started: {self._session_start_time.strftime('%Y-%m-%d %H:%M:%S')}",
                 f"Current application: Guru Agent",
-                f"Current project: guru_agent",
+                f"Active project: {self.get_active_project() or 'none selected'}",
                 project_context,
                 f"Agent status: running" if active > 0 else "Agent status: idle",
                 f"Active tasks: {active}",
@@ -478,8 +504,11 @@ class AssistantBridge:
         """Internal method to get project context."""
         import os
         try:
-            # Get workspace root
-            workspace = os.environ.get("WORKSPACE_ROOT", os.getcwd())
+            # Use the persisted selection, never the Guru Agent source tree as an implicit project.
+            workspace_path = get_active_project()
+            if workspace_path is None:
+                return "Active project: none selected. Use set_active_project before repository work."
+            workspace = str(workspace_path)
             project_name = os.path.basename(workspace)
             
             # Check for common project files
@@ -508,7 +537,7 @@ class AssistantBridge:
             
             return "\n".join(lines)
         except Exception:
-            return "Project: guru_agent (workspace context unavailable)"
+            return "Active project context unavailable."
 
     def get_recent_task_history(self, limit: int = 5) -> List[Dict[str, Any]]:
         """Get recent task history for context."""

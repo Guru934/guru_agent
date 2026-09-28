@@ -3,15 +3,18 @@
 
 ## Current Milestone
 
-**M0 — Stabilize**
+**M1 — Repo Awareness**
 
 Status: ✅ COMPLETE
 
 ## Current Objective
 
-Establish a clean, verified baseline before implementing the autonomous coding-agent loop.
+Select and persist the repository used by delegated coding tasks without ever
+falling back to Guru Agent's own source tree.
 
-## M0 Checklist
+## M0 — Stabilize: COMPLETE
+
+### Checklist
 
 - [x] Run the real local test suite (`.venv` is the launcher interpreter but lacks pytest; CI installs pytest)
 - [x] Record the actual test result
@@ -66,6 +69,30 @@ M0 is complete only when:
 5. Relevant tests pass after the changes.
 6. The changes are committed.
 
+## M1 Verification Record
+
+- `set_active_project` accepts an existing Git repository, canonicalizes its
+  root, rejects Guru Agent's source tree, and persists it in SQLite's existing
+  `preferences` table. `get_active_project` revalidates the persisted path.
+- `./guru project use <path>` selects a repository and `./guru project show`
+  reports exactly the selected canonical repository. Gemini Live also exposes
+  project selection and retrieval tools.
+- Acceptance tests verified that explicit `repo_path` takes precedence over a
+  different active project and that omitted `repo_path` uses the persisted
+  active project. Recognized
+  repository work without a valid selection fails before launch. Every delegated
+  run without a project also has a PolicyEngine guard denying file, search, and
+  shell tools, so unrecognized coding phrasing cannot fall back to `APP_DIR`;
+  desktop tools remain available.
+- A coding delegation with neither explicit nor valid active project was
+  rejected before runtime start; no fallback to `/home/guru/guru_agent` occurred.
+- Project-bound execution passes the selected root through AgentRuntime,
+  ToolExecutor, and PolicyEngine. Reads/writes, shell working directory, and
+  search are scoped to the selected project; paths outside it remain denied.
+- `QT_QPA_PLATFORM=offscreen python -m pytest -q`: **119 passed, 1 skipped**
+  (9 subtests passed). The only warning is the installed `google-genai`
+  deprecation warning.
+
 ## Current Architecture
 
 ```text
@@ -91,6 +118,6 @@ current implementation.
 
 ## Next Milestone
 
-**M1 — Repo Awareness**
+**M2 — Coding Tools**
 
 Status: NOT STARTED

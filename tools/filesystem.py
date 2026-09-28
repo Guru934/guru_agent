@@ -1,11 +1,11 @@
 import os
 
-from config import MAX_READ_BYTES, MAX_WRITE_BYTES
+from config import APP_DIR, MAX_READ_BYTES, MAX_WRITE_BYTES
 from tools.workspace import resolve_workspace_path
 
 
-def read_file(path: str) -> str:
-    file_path = resolve_workspace_path(path)
+def read_file(path: str, _workspace_dir=None) -> str:
+    file_path = resolve_workspace_path(path, base_dir=_workspace_dir or APP_DIR, allowed_root=_workspace_dir)
     file_size = file_path.stat().st_size
     if file_size > MAX_READ_BYTES:
         raise ValueError(f"File size ({file_size} bytes) exceeds maximum read limit ({MAX_READ_BYTES} bytes).")
@@ -17,10 +17,10 @@ def read_file(path: str) -> str:
     return content
 
 
-def write_file_content(path: str, content: str) -> str:
-    target = resolve_workspace_path(path)
+def write_file_content(path: str, content: str, _workspace_dir=None) -> str:
+    target = resolve_workspace_path(path, base_dir=_workspace_dir or APP_DIR, allowed_root=_workspace_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target = resolve_workspace_path(path)
+    target = resolve_workspace_path(path, base_dir=_workspace_dir or APP_DIR, allowed_root=_workspace_dir)
     content_bytes = content.encode("utf-8")
     if len(content_bytes) > MAX_WRITE_BYTES:
         raise ValueError(f"Content size ({len(content_bytes)} bytes) exceeds maximum write limit ({MAX_WRITE_BYTES} bytes).")

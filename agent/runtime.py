@@ -2,6 +2,7 @@ import os
 import threading
 import uuid
 from typing import Dict, List, Optional
+from pathlib import Path
 
 from agent.events import emit
 from agent.executor import ToolExecutor
@@ -12,8 +13,13 @@ from agent.fast_actions import resolve_fast_action
 
 
 class AgentRuntime:
-    def __init__(self, model_id: str = "gemini-2.5-flash"):
+    def __init__(
+        self, model_id: str = "gemini-2.5-flash", project_path: Optional[Path] = None,
+        require_project: bool = False,
+    ):
         self.model_id = model_id
+        self.project_path = Path(project_path).resolve() if project_path is not None else None
+        self.require_project = require_project
         self.executor = ToolExecutor(registry)
         self._cancellation_tokens: Dict[str, threading.Event] = {}
         self._cancellation_lock = threading.Lock()
@@ -57,6 +63,7 @@ class AgentRuntime:
         emit("TASK_STARTED", task_id, {"description": request})
         default_instruction = (
             "You are a helpful local desktop assistant. "
+            + (f"The selected project workspace is {self.project_path}. Use it for repository tasks. " if self.project_path else "")
             + (
                 "Use registered tools for local operations. Tool arguments are validated and policy-checked. "
                 if enable_tools
@@ -83,10 +90,15 @@ class AgentRuntime:
                         task_id,
                         {"msg": f"Using deterministic fast path: {fast_action.tool_name}"},
                     )
+                    tool_context = {"task_id": task_id, "cancel_event": cancellation}
+                    if self.project_path is not None:
+                        tool_context["workspace_dir"] = self.project_path
+                    if self.require_project:
+                        tool_context["require_project"] = True
                     result = self.executor.execute(
                         fast_action.tool_name,
                         fast_action.arguments,
-                        {"task_id": task_id, "cancel_event": cancellation},
+                        tool_context,
                     )
                     result_text = str(result.output)
                     state.add_observation(
@@ -130,10 +142,15 @@ class AgentRuntime:
                 calls = response.function_calls
                 results = []
                 for call in calls:
+                    tool_context = {"task_id": task_id, "cancel_event": cancellation}
+                    if self.project_path is not None:
+                        tool_context["workspace_dir"] = self.project_path
+                    if self.require_project:
+                        tool_context["require_project"] = True
                     result = self.executor.execute(
                         call.name,
                         call.arguments,
-                        {"task_id": task_id, "cancel_event": cancellation},
+                        tool_context,
                     )
                     result_text = str(result.output)
                     state.add_observation(

@@ -948,7 +948,8 @@ class Phase10DelegationTests(unittest.TestCase):
         allowed_tools = {
             "delegate_to_agent", "get_agent_status", 
             "approve_pending_action", "reject_pending_action",
-            "get_project_context", "get_task_history", "find_task_by_description"
+            "get_project_context", "get_task_history", "find_task_by_description",
+            "set_active_project", "get_active_project"
         }
         self.assertEqual(set(tool_names), allowed_tools)
         

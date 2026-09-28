@@ -101,9 +101,11 @@ class ToolExecutor:
             return self._finish(
                 task_id, tool_name, ExecutionResult("cancelled", "Task cancelled before tool execution.")
             )
-        return self._run_tool_logic(tool_name, arguments, task_id)
+        return self._run_tool_logic(tool_name, arguments, task_id, context)
 
-    def _run_tool_logic(self, tool_name: str, arguments: dict, task_id: str) -> ExecutionResult:
+    def _run_tool_logic(
+        self, tool_name: str, arguments: dict, task_id: str, context: Dict[str, Any] = None
+    ) -> ExecutionResult:
         emit("TOOL_STARTED", task_id, {"tool_name": tool_name})
         try:
             func = self.registry.get_tool(tool_name)
@@ -115,6 +117,8 @@ class ToolExecutor:
             call_kwargs = dict(arguments)
             if "_task_id" in sig.parameters:
                 call_kwargs["_task_id"] = task_id
+            if "_workspace_dir" in sig.parameters and context:
+                call_kwargs["_workspace_dir"] = context.get("workspace_dir")
                 
             res = func(**call_kwargs)
             emit("TOOL_FINISHED", task_id, {"tool_name": tool_name, "status": "success", "output": str(res)[:500]})

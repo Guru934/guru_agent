@@ -4,7 +4,7 @@ import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Optional, Sequence
 
 from agent.tool_registry import registry
 from agent.capabilities import registry as capability_registry
@@ -56,9 +56,11 @@ class PolicyEngine:
             logger.exception("Unable to append to the security audit log.")
             return False
 
-    def _is_path_allowed(self, path_str: str, cwd: Path = APP_DIR) -> bool:
+    def _is_path_allowed(
+        self, path_str: str, cwd: Path = APP_DIR, workspace_root: Optional[Path] = None
+    ) -> bool:
         try:
-            resolve_workspace_path(path_str, cwd)
+            resolve_workspace_path(path_str, cwd, allowed_root=workspace_root)
             return True
         except PermissionError:
             return False
@@ -103,16 +105,22 @@ class PolicyEngine:
     def _has_shell_operators(command: str) -> bool:
         return any(character in command for character in (";", "|", "&", "`", "$", "<", ">", "\n"))
 
-    def _safe_path_arguments(self, tokens: Sequence[str], options: str = "") -> bool:
+    def _safe_path_arguments(
+        self, tokens: Sequence[str], options: str = "", cwd: Path = APP_DIR,
+        workspace_root: Optional[Path] = None,
+    ) -> bool:
         for token in tokens:
             if token.startswith("-"):
                 if not token[1:] or any(character not in options for character in token[1:]):
                     return False
-            elif not self._is_path_allowed(token):
+            elif not self._is_path_allowed(token, cwd, workspace_root):
                 return False
         return True
 
-    def _is_safe_shell_command(self, command: str, tokens: Sequence[str]) -> bool:
+    def _is_safe_shell_command(
+        self, command: str, tokens: Sequence[str], cwd: Path = APP_DIR,
+        workspace_root: Optional[Path] = None,
+    ) -> bool:
         if self._has_shell_operators(command):
             return False
         executable = Path(tokens[0]).name
@@ -123,9 +131,9 @@ class PolicyEngine:
         if executable == "echo":
             return True
         if executable == "ls":
-            return self._safe_path_arguments(args, options="lah")
+            return self._safe_path_arguments(args, options="lah", cwd=cwd, workspace_root=workspace_root)
         if executable == "cat":
-            return bool(args) and all(self._is_path_allowed(arg) for arg in args)
+            return bool(args) and all(self._is_path_allowed(arg, cwd, workspace_root) for arg in args)
         if executable == "git":
             return tokens in (["git", "status"], ["git", "diff"], ["git", "log"])
         return False
@@ -135,7 +143,10 @@ class PolicyEngine:
         grant = capability_registry.check_grant(tool_name, arguments)
         return grant is not None
 
-    def _evaluate_shell(self, command: str, risk: str) -> PolicyDecision:
+    def _evaluate_shell(
+        self, command: str, risk: str, cwd: Path = APP_DIR,
+        workspace_root: Optional[Path] = None,
+    ) -> PolicyDecision:
         try:
             tokens = shlex.split(command, posix=True)
         except ValueError as error:
@@ -149,7 +160,7 @@ class PolicyEngine:
         if executable in {"chmod", "chown"} and any(arg in {"-R", "--recursive"} for arg in tokens[1:]):
             return PolicyDecision(False, False, "critical", f"Recursive {executable} operations are blocked by policy.")
 
-        if self._is_safe_shell_command(command, tokens):
+        if self._is_safe_shell_command(command, tokens, cwd, workspace_root):
             return PolicyDecision(True, False, "low", "Command matches the restricted read-only command policy.")
         if self.safe_mode:
             return PolicyDecision(
@@ -161,6 +172,8 @@ class PolicyEngine:
         return PolicyDecision(True, False, risk, "Safe mode is disabled; command is permitted by user preference.")
 
     def evaluate(self, tool_name: str, arguments: dict, context: dict, tool_registry=registry) -> PolicyDecision:
+        workspace_root = context.get("workspace_dir")
+        cwd = Path(workspace_root) if workspace_root else APP_DIR
         spec = tool_registry.get_spec(tool_name)
         if not spec:
             decision = PolicyDecision(False, False, "unknown", f"Tool {tool_name} is not registered.")
@@ -168,16 +181,23 @@ class PolicyEngine:
             return decision
 
         risk = spec.risk
-        if tool_name == "execute_shell":
-            decision = self._evaluate_shell(str(arguments.get("command", "")), risk)
+        if context.get("require_project") and not workspace_root and tool_name in {
+            "execute_shell", "read_file", "write_file", "search"
+        }:
+            decision = PolicyDecision(
+                False, False, "critical",
+                "Repository and file operations require a selected active project.",
+            )
+        elif tool_name == "execute_shell":
+            decision = self._evaluate_shell(str(arguments.get("command", "")), risk, cwd, workspace_root)
         elif tool_name == "write_file":
             path = arguments.get("path", "")
-            if self._is_protected_path(path):
+            if self._is_protected_path(path, cwd):
                 decision = PolicyDecision(
                     False, False, "critical",
                     f"Path {path!r} is protected from modification by Guru Agent tools."
                 )
-            elif not self._is_path_allowed(path):
+            elif not self._is_path_allowed(path, cwd, workspace_root):
                 decision = PolicyDecision(
                     False, False, "critical",
                     f"Path {path!r} is outside the allowed workspace roots."
@@ -190,7 +210,7 @@ class PolicyEngine:
                 decision = PolicyDecision(True, False, risk, f"{risk.capitalize()}-risk action allowed.")
         elif tool_name == "read_file":
             path = arguments.get("path", "")
-            if not self._is_path_allowed(path):
+            if not self._is_path_allowed(path, cwd, workspace_root):
                 decision = PolicyDecision(
                     False, False, "critical",
                     f"Path {path!r} is outside the allowed workspace roots."

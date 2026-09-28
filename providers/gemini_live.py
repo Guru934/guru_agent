@@ -45,9 +45,27 @@ LIVE_TOOL_DECLARATIONS = [
                     type=types.Type.STRING,
                     description="Natural language description of the task to delegate"
                 ),
+                "repo_path": types.Schema(
+                    type=types.Type.STRING,
+                    description="Optional repository path for this task; otherwise the active project is used",
+                ),
             },
             required=["task_description"],
         ),
+    ),
+    types.FunctionDeclaration(
+        name="set_active_project",
+        description="Select an existing Git repository as the active project for delegated repository tasks.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={"path": types.Schema(type=types.Type.STRING, description="Repository path")},
+            required=["path"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_active_project",
+        description="Show the currently selected repository used by delegated tasks.",
+        parameters=types.Schema(type=types.Type.OBJECT, properties={}, required=[]),
     ),
     types.FunctionDeclaration(
         name="get_agent_status",
@@ -570,7 +588,9 @@ class GeminiDesktopAgent:
             "\n- Ask for user approval when the execution agent needs it"
             "\n- Report results when tasks complete"
             "\n\nAvailable delegation tools:"
-            "\n- delegate_to_agent(task_description): Start a background task, returns task_id immediately"
+            "\n- set_active_project(path): Select the repository for delegated coding work"
+            "\n- get_active_project(): Show the selected repository"
+            "\n- delegate_to_agent(task_description, repo_path?): Start a task in the selected or explicit repository"
             "\n- get_agent_status(task_id?): Check progress of a task or all active tasks"
             "\n- approve_pending_action(approval_id): Approve a pending action (only when explicitly asked)"
             "\n- reject_pending_action(approval_id): Reject a pending action (only when explicitly asked)"
@@ -603,6 +623,10 @@ class GeminiDesktopAgent:
             try:
                 if name == "delegate_to_agent":
                     result = await self._delegate_to_agent(args)
+                elif name == "set_active_project":
+                    result = await self._set_active_project(args)
+                elif name == "get_active_project":
+                    result = await self._get_active_project(args)
                 elif name == "get_agent_status":
                     result = await self._get_agent_status(args)
                 elif name == "approve_pending_action":
@@ -691,9 +715,24 @@ class GeminiDesktopAgent:
         task_id = self.assistant_bridge.delegate_task(
             task_description,
             model_id=self.current_model,
+            repo_path=args.get("repo_path"),
             # Could also pass history/context if available
         )
         return {"task_id": task_id, "message": f"Delegated task: {task_description}"}
+
+    async def _set_active_project(self, args: dict) -> dict:
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        path = args.get("path")
+        if not path:
+            return {"error": "path is required"}
+        selected = self.assistant_bridge.set_active_project(path)
+        return {"active_project": selected}
+
+    async def _get_active_project(self, args: dict) -> dict:
+        if not self.assistant_bridge:
+            return {"error": "Assistant bridge not available"}
+        return {"active_project": self.assistant_bridge.get_active_project()}
 
     async def _get_agent_status(self, args: dict) -> dict:
         """Get status of a delegated task."""

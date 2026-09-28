@@ -104,7 +104,9 @@ registry.register(ToolSpec(
         "additionalProperties": False,
     },
     risk="high",
-    handler=lambda command, _task_id=None: execute_bash_command(command, _task_id)
+    handler=lambda command, _task_id=None, _workspace_dir=None: execute_bash_command(
+        command, _task_id, _workspace_dir
+    )
 ))
 
 registry.register(ToolSpec(
@@ -120,7 +122,7 @@ registry.register(ToolSpec(
         "additionalProperties": False,
     },
     risk="medium",
-    handler=lambda path, content: write_file_content(path, content)
+    handler=lambda path, content, _workspace_dir=None: write_file_content(path, content, _workspace_dir)
 ))
 
 registry.register(ToolSpec(
@@ -135,7 +137,7 @@ registry.register(ToolSpec(
         "additionalProperties": False,
     },
     risk="low",
-    handler=lambda path: read_file(path)
+    handler=lambda path, _workspace_dir=None: read_file(path, _workspace_dir)
 ))
 
 registry.register(ToolSpec(
@@ -150,7 +152,7 @@ registry.register(ToolSpec(
         "additionalProperties": False,
     },
     risk="low",
-    handler=lambda query: ripgrep_search_impl(query)
+    handler=lambda query, _workspace_dir=None: ripgrep_search_impl(query, _workspace_dir)
 ))
 
 registry.register(ToolSpec(

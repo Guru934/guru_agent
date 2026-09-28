@@ -1,8 +1,10 @@
 import json
 import os
 import sqlite3
+import subprocess
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, List, Optional
 
 from utils import get_logger
@@ -250,6 +252,53 @@ def set_preference(key: str, value: str):
             (key, value),
         )
         conn.commit()
+
+
+def validate_project_path(path: str) -> Path:
+    """Return a canonical path for an existing, non-Guru Git repository."""
+    from config import APP_DIR
+
+    try:
+        selected_path = Path(os.path.expanduser(path)).resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError(f"Project path must be an existing Git repository: {path!r}.") from error
+    if not selected_path.is_dir():
+        raise ValueError(f"Project path must be an existing Git repository: {path!r}.")
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(selected_path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f"Unable to validate project repository: {path!r}.") from error
+    if result.returncode:
+        raise ValueError(f"Project path must be an existing Git repository: {path!r}.")
+    project = Path(result.stdout.strip()).resolve(strict=True)
+    source_root = APP_DIR.resolve()
+    if project == source_root or project.is_relative_to(source_root):
+        raise ValueError("Guru Agent's own source tree cannot be selected as the active project.")
+    return project
+
+
+def set_active_project(path: str) -> Path:
+    """Validate and persist the user's active Git repository."""
+    project = validate_project_path(path)
+    set_preference("active_project", str(project))
+    return project
+
+
+def get_active_project() -> Optional[Path]:
+    """Return the persisted active repository if it still exists and is valid."""
+    stored_path = get_preference("active_project")
+    if not stored_path:
+        return None
+    try:
+        return validate_project_path(stored_path)
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 # Auto-initialize on import

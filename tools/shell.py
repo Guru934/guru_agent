@@ -22,7 +22,7 @@ def _command_environment():
         "LC_ALL": "C.UTF-8",
     }
 
-def execute_bash_command(command: str, _task_id: str = None) -> str:
+def execute_bash_command(command: str, _task_id: str = None, _workspace_dir=None) -> str:
     if _task_id:
         emit("SHELL_COMMAND", _task_id, {"command": command})
 
@@ -32,7 +32,7 @@ def execute_bash_command(command: str, _task_id: str = None) -> str:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        cwd=str(APP_DIR),
+        cwd=str(_workspace_dir or APP_DIR),
         env=_command_environment(),
         start_new_session=True,
         bufsize=0,
@@ -92,9 +92,10 @@ def execute_bash_command(command: str, _task_id: str = None) -> str:
         return f"Command exited with status {return_code}.\n{text}"
     return text
 
-def ripgrep_search_impl(query: str) -> str:
+def ripgrep_search_impl(query: str, _workspace_dir=None) -> str:
     all_output = []
-    for root in WORKSPACE_ROOTS:
+    roots = [_workspace_dir] if _workspace_dir is not None else WORKSPACE_ROOTS
+    for root in roots:
         if not root.exists():
             continue
         result = subprocess.run(
