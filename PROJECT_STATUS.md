@@ -3,14 +3,13 @@
 
 ## Current Milestone
 
-**M2 — Coding Tools**
+**M4 — Verifier**
 
 Status: ✅ COMPLETE
 
 ## Current Objective
 
-Provide repository-aware coding tools through ToolExecutor, PolicyEngine,
-Approval, and Capability while keeping operations scoped to the active project.
+Implement deterministic verification beyond the pytest proof used by M3.
 
 ## M0 — Stabilize: COMPLETE
 
@@ -109,6 +108,19 @@ M0 is complete only when:
   test reports this reason explicitly. M0 protected-path hard-link behavior
   remains covered by the existing security checks.
 
+## M3 — Vertical Slice: COMPLETE
+
+- A deterministic one-step plan changes `math.py` through `replace_in_file`,
+  then runs `tests/test_math.py` through `run_command` in the selected
+  repository. Success is reported only when pytest passes; a failing test
+  produces a failure result.
+- M3 is deliberately limited scaffolding for the canonical add-function
+  example. It is not the full coding loop and does not include retries.
+- Pytest must be available in the execution environment for verification.
+- `QT_QPA_PLATFORM=offscreen python -m pytest -q`: **145 passed, 2 skipped**
+  (16 subtests passed). The only warning is the installed `google-genai`
+  deprecation warning.
+
 ## Current Architecture
 
 ```text
@@ -129,11 +141,11 @@ Approval / Capability
 Registered tools
 ```
 
-The coding-agent loop and verifier shown in `ROADMAP.md` are planned work, not
-current implementation.
+The full coding-agent loop and dedicated verifier shown in `ROADMAP.md` are
+planned work, not current implementation.
 
 ## Next Milestone
 
-**M3 — Vertical Slice**
+**M4 — Verifier**
 
 Status: NOT STARTED
