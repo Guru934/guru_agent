@@ -110,7 +110,13 @@ class ToolExecutor:
             if not func:
                 raise ValueError(f"Tool {tool_name} is not registered.")
                 
-            res = func(**arguments)
+            import inspect
+            sig = inspect.signature(func)
+            call_kwargs = dict(arguments)
+            if "_task_id" in sig.parameters:
+                call_kwargs["_task_id"] = task_id
+                
+            res = func(**call_kwargs)
             emit("TOOL_FINISHED", task_id, {"tool_name": tool_name, "status": "success", "output": str(res)[:500]})
             return ExecutionResult("success", res)
         except Exception as error:

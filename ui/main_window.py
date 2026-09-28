@@ -41,6 +41,7 @@ from agent.assistant_events import AssistantEvent
 
 # Toggle file for F1/F3 keybind integration
 TOGGLE_FILE = "/tmp/guru_agent_toggle"
+VOICE_TOGGLE_FILE = "/tmp/guru_agent_voice_toggle"
 
 
 # --- Constants & Style (Dracula theme colors) --
@@ -71,27 +72,31 @@ COLORS = {
 # Define QSS styles directly in a string constant
 QSS_STYLES = f"""
 QMainWindow {{
-    background-color: rgba(22, 22, 30, 0.98);
+    background-color: rgba(18, 18, 24, 0.98);
     color: {COLORS['foreground']};
-    border: 1px solid rgba(255, 255, 255, 0.1); 
+    border: 1px solid rgba(255, 255, 255, 0.08); 
     border-radius: 14px;
 }}
 
 QWidget#sidebar {{
-    background-color: #121218;
-    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    background-color: #101015;
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
 }}
 
 QPushButton#new_chat_btn {{
     background-color: {COLORS['purple']};
     color: {COLORS['background']};
-    font-weight: bold;
-    border-radius: 8px;
-    padding: 10px;
+    font-weight: 600;
+    border-radius: 10px;
+    padding: 12px;
     border: none;
+    font-size: 13px;
 }}
 QPushButton#new_chat_btn:hover {{
     background-color: {COLORS['pink']};
+}}
+QPushButton#new_chat_btn:pressed {{
+    background-color: #a074d9;
 }}
 
 QListWidget {{
@@ -101,12 +106,13 @@ QListWidget {{
     color: {COLORS['foreground']};
 }}
 QListWidget::item {{
-    padding: 8px 5px;
-    border-radius: 5px;
-    margin-bottom: 2px;
+    padding: 10px 8px;
+    border-radius: 6px;
+    margin: 2px 4px;
 }}
 QListWidget::item:selected {{
     background-color: {COLORS['selection']};
+    border: 1px solid {COLORS['purple']};
 }}
 QListWidget::item:hover:!selected {{
     background-color: {COLORS['current_line']};
@@ -118,28 +124,32 @@ QListWidget::item[whatsThis="active-session"] {{
 
 QWidget#top_bar {{
     background-color: transparent;
-    padding: 5px 15px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 6px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }}
 
 QComboBox {{
-    background-color: #1f2335;
+    background-color: #1a1b24;
     color: #c0caf5;
-    border: 1px solid #3b4261;
+    border: 1px solid #2d3040;
     border-radius: 8px;
     padding: 6px 12px;
     font-size: 12px;
     font-weight: 500;
+    min-width: 140px;
+}}
+QComboBox:hover {{
+    border: 1px solid {COLORS['purple']};
 }}
 QComboBox::drop-down {{
     border: none;
-    width: 20px;
+    width: 24px;
 }}
 QComboBox QAbstractItemView {{
-    background-color: #1a1b26;
+    background-color: #16171e;
     color: #c0caf5;
     selection-background-color: #3d59a1;
-    border: 1px solid #3b4261;
+    border: 1px solid #2d3040;
     border-radius: 8px;
     padding: 4px;
     outline: none;
@@ -155,68 +165,103 @@ QTextBrowser {{
     border: none;
     color: {COLORS['foreground']};
     font-size: 14px;
+    line-height: 1.5;
     padding: 5px;
 }}
 QTextBrowser.user-bubble {{
-    background-color: #2b3a5c; 
+    background-color: #253048; 
     color: #ffffff; 
-    border-radius: 14px; 
-    padding: 10px 14px;
+    border-radius: 16px; 
+    padding: 12px 16px;
+    margin: 4px 0;
 }}
 QTextBrowser.ai-bubble {{
     background-color: transparent; 
-    color: #e0e6f8; 
+    color: #e8edf8; 
     border: none;
-    padding: 6px 12px;
+    padding: 8px 14px;
+    margin: 4px 0;
 }}
 QTextBrowser.system-bubble {{
     background-color: {COLORS['system_bubble_bg']};
-    border-radius: 12px;
-    padding: 10px 14px;
+    border-radius: 14px;
+    padding: 12px 16px;
     color: {COLORS['foreground']};
+    margin: 4px 0;
+    border: 1px solid rgba(255, 255, 255, 0.05);
 }}
 QTextBrowser.error-bubble {{
     background-color: {COLORS['error_bg']};
     color: {COLORS['error_fg']};
-    border-radius: 12px;
-    padding: 10px 14px;
+    border-radius: 14px;
+    padding: 12px 16px;
     border: 1px solid {COLORS['red']};
+    margin: 4px 0;
 }}
 
 QFrame#input_bar_widget {{
-    background-color: #16161e;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    background-color: #14141b;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 0 0 14px 14px;
 }}
 
 QTextEdit#input_box {{
-    background-color: #1f2335; 
-    border: 1px solid #3b4261; 
-    border-radius: 12px; 
-    padding: 10px 14px; 
-    color: #fff;
+    background-color: #1a1b24; 
+    border: 1px solid #2d3040; 
+    border-radius: 14px; 
+    padding: 12px 16px; 
+    color: #f8f8f2;
     font-family: inherit;
+    font-size: 14px;
+    selection-background-color: #3d59a1;
+}}
+QTextEdit#input_box:focus {{
+    border: 1px solid {COLORS['purple']};
+    background-color: #1e1f2a;
 }}
 
 QPushButton#send_btn {{
-    background-color: #7aa2f7; 
-    color: #15161e; 
-    border-radius: 8px; 
-    font-weight: bold;
-    padding: 10px 15px;
+    background-color: {COLORS['purple']}; 
+    color: {COLORS['background']}; 
+    border-radius: 10px; 
+    font-weight: 600;
+    padding: 10px 18px;
     border: none;
+    font-size: 13px;
 }}
 QPushButton#send_btn:hover {{
-    background-color: {COLORS['cyan']};
+    background-color: {COLORS['pink']};
+}}
+QPushButton#send_btn:pressed {{
+    background-color: #a074d9;
+}}
+
+/* Status indicator labels */
+QLabel#status_indicator {{
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+}}
+
+/* F2 Indicator */
+QLabel#f2_indicator {{
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 14px;
 }}
 
 /* Pygments code highlighting styles for QTextBrowser (embedded directly) */
 .codehilite {{
     background-color: {COLORS['background']};
     color: {COLORS['foreground']};
-    padding: 10px;
-    border-radius: 8px;
-    font-family: monospace;
-    font-size: 13px;
+    padding: 12px;
+    border-radius: 10px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Monospace', monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    border: 1px solid rgba(255, 255, 255, 0.05);
 }}
 .hll {{ background-color: {COLORS['current_line']} }}
 .c {{ color: {COLORS['comment']} }}
@@ -322,7 +367,9 @@ class AssistantEventListener(QObject):
 class ScratchpadWindow(QMainWindow):
     # Live callbacks arrive from the dedicated asyncio thread. Emit Qt signals
     # so all widget mutations happen on the GUI thread.
-    live_state_signal = pyqtSignal(str)
+    live_state_signal = pyqtSignal(str)          # Legacy: receives both connection and voice states
+    live_connection_signal = pyqtSignal(str)     # Connection state only
+    live_voice_signal = pyqtSignal(str)          # Voice state only
     live_text_signal = pyqtSignal(str, str)
     live_bubble_signal = pyqtSignal(str)
     live_glow_signal = pyqtSignal(str)
@@ -331,7 +378,9 @@ class ScratchpadWindow(QMainWindow):
     def __init__(self, visualizer_state_emitter: Optional[QObject] = None, visualizer_glow_emitter: Optional[QObject] = None):
         super().__init__()
 
-        self.live_state_signal.connect(self._on_live_state)
+        self.live_state_signal.connect(self._on_live_state)          # Legacy
+        self.live_connection_signal.connect(self._on_live_connection_state)
+        self.live_voice_signal.connect(self._on_live_voice_state)
         self.live_text_signal.connect(self._on_live_text)
         self.live_bubble_signal.connect(self._on_live_bubble)
         self.live_glow_signal.connect(self._on_live_glow)
@@ -416,6 +465,7 @@ class ScratchpadWindow(QMainWindow):
         sidebar_widget.setObjectName("sidebar")
         sidebar_layout = QVBoxLayout(sidebar_widget)
         sidebar_layout.setContentsMargins(10,10,10,10)
+        sidebar_layout.setSpacing(8)
         
         new_chat_btn = QPushButton("＋ New Chat")
         new_chat_btn.setObjectName("new_chat_btn")
@@ -432,6 +482,9 @@ class ScratchpadWindow(QMainWindow):
         sidebar_layout.addWidget(self.trust_safety_panel)
         
         splitter.addWidget(sidebar_widget)
+        # Use stretch factors instead of hardcoded sizes - sidebar gets minimum, chat expands
+        splitter.setStretchFactor(0, 0)  # Sidebar: no stretch
+        splitter.setStretchFactor(1, 1)  # Chat: expands to fill
         
         # --- Chat Area ---
         chat_widget = QWidget()
@@ -461,11 +514,12 @@ class ScratchpadWindow(QMainWindow):
         self.model_boundary_label.setStyleSheet("color: #8be9fd; font-weight: bold; font-size: 11px;")
         top_bar_layout.addWidget(self.model_boundary_label)
         
-        self.heavy_agent_status_label = QLabel("● Heavy Agent: Idle")
-        self.heavy_agent_status_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
-        top_bar_layout.addWidget(self.heavy_agent_status_label)
+        # Task State Indicator (idle/running/waiting approval)
+        self.task_state_label = QLabel("● Task: Idle")
+        self.task_state_label.setStyleSheet("color: #a6adc8; font-weight: bold; font-size: 11px;")
+        top_bar_layout.addWidget(self.task_state_label)
         
-        # Voice Assistant toggle and connection state
+        # Voice Assistant toggle
         self.voice_assistant_btn = QPushButton("🎤 Voice Assistant")
         self.voice_assistant_btn.setCheckable(True)
         self.voice_assistant_btn.setToolTip("Start/Stop Gemini Live voice assistant")
@@ -490,14 +544,15 @@ class ScratchpadWindow(QMainWindow):
         self.voice_assistant_btn.clicked.connect(self.toggle_voice_assistant)
         top_bar_layout.addWidget(self.voice_assistant_btn)
         
-        self.voice_connection_label = QLabel("🔴 Disconnected")
-        self.voice_connection_label.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 11px; margin-left: 5px;")
-        top_bar_layout.addWidget(self.voice_connection_label)
+        # Connection State (for Live session)
+        self.connection_state_label = QLabel("● Live: Disconnected")
+        self.connection_state_label.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 11px; margin-left: 5px;")
+        top_bar_layout.addWidget(self.connection_state_label)
         
-        # Assistant State Indicator
-        self.assistant_state_label = QLabel("🎙️ Idle")
-        self.assistant_state_label.setStyleSheet("color: #8be9fd; font-weight: bold; font-size: 11px; margin-left: 10px;")
-        top_bar_layout.addWidget(self.assistant_state_label)
+        # Voice State (sleeping/listening/thinking/speaking)
+        self.voice_state_label = QLabel("● Voice: Sleeping")
+        self.voice_state_label.setStyleSheet("color: #6272a4; font-weight: bold; font-size: 11px; margin-left: 10px;")
+        top_bar_layout.addWidget(self.voice_state_label)
         
         top_bar_layout.addStretch()
         
@@ -550,16 +605,17 @@ class ScratchpadWindow(QMainWindow):
          
         self.chat_feed_scroll_area.setWidget(self.chat_feed_content_widget)
 
-        # QSplitter to allow resizing the terminal drawer
-
+        # QSplitter for chat feed + terminal drawer (vertical)
         self.chat_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.chat_splitter.setChildrenCollapsible(True)
+        self.chat_splitter.setHandleWidth(1)
         
-        # Move scroll area into splitter
+        # Chat feed gets stretch factor 1 - expands to fill available space
         self.chat_splitter.addWidget(self.chat_feed_scroll_area)
         
-# Terminal Drawer - Agent Workspace (contextual, shows when tasks run)
+        # Terminal Drawer - Agent Workspace (contextual, shows when tasks run)
         self.terminal_drawer = QWidget()
-        self.terminal_drawer.setMinimumHeight(40)
+        self.terminal_drawer.setMinimumHeight(0)  # Allow full collapse
         self.terminal_drawer.setStyleSheet("background-color: #1e1e2e; border-top: 1px solid #313244;")
         terminal_layout = QVBoxLayout(self.terminal_drawer)
         terminal_layout.setContentsMargins(0, 0, 0, 0)
@@ -573,20 +629,23 @@ class ScratchpadWindow(QMainWindow):
         self.terminal_text_area = AgentTerminal()
         self.terminal_text_area.setStyleSheet("background-color: #1a1b26; color: #a6adc8; padding: 5px; font-family: monospace;")
         self.terminal_text_area.hide()
-        terminal_layout.addWidget(self.terminal_text_area)
-        
-        # Connect terminal signals
-        self.terminal_text_area.output_received.connect(self._on_terminal_output)
-        self.terminal_text_area.command_finished.connect(self._on_terminal_finished)
+        terminal_layout.addWidget(self.terminal_text_area, stretch=1)
         
         self.chat_splitter.addWidget(self.terminal_drawer)
-        self.chat_splitter.setSizes([800, 40]) # Default closed size
+        # Chat feed stretches, terminal drawer only takes space when visible
+        self.chat_splitter.setStretchFactor(0, 1)  # Chat feed: expands
+        self.chat_splitter.setStretchFactor(1, 0)  # Terminal: no stretch
+        
+        # Initially collapse terminal drawer (size 0)
+        self.chat_splitter.setSizes([1, 0])
         
         # Task tracking for auto-show/hide workspace
         self._active_task_count = 0
 
+        # Add chat_splitter to chat_layout with stretch=1 so it fills space between top_bar and input_bar
+        chat_layout.addWidget(self.chat_splitter, stretch=1)
         
-        # Input Bar
+        # Input Bar - always at bottom (stretch=0)
         input_bar_widget = QFrame()
         input_bar_widget.setObjectName("input_bar_widget")
         input_bar_layout = QHBoxLayout(input_bar_widget)
@@ -595,18 +654,14 @@ class ScratchpadWindow(QMainWindow):
         self.input_box = AutoResizingTextEdit()
         self.input_box.text_changed_height.connect(self.adjust_input_bar_height)
         self.input_box.submit_pressed.connect(self.send_message)
-        self.input_box.setFixedHeight(50) 
-        input_bar_layout.addWidget(self.input_box)
+        # Remove fixed height - let AutoResizingTextEdit handle it
+        input_bar_layout.addWidget(self.input_box, stretch=1)
         
-        self.voice_btn = QPushButton("🎙")
-        self.voice_btn.setObjectName("voice_btn")
-        self.voice_btn.setFixedSize(40, 40)
-        self.voice_btn.setCheckable(True)
-        self.voice_btn.setToolTip("Hold to talk")
-        self.voice_btn.pressed.connect(self.start_voice_capture)
-        self.voice_btn.released.connect(self.finish_voice_capture)
-        self.voice_btn.setStyleSheet("QPushButton { background: #3b4261; color: white; border: none; border-radius: 10px; } QPushButton:checked { background: #ff5555; }")
-        input_bar_layout.addWidget(self.voice_btn)
+        self.f2_indicator = QLabel("[F2] Wake Voice")
+        self.f2_indicator.setObjectName("f2_indicator")
+        self.f2_indicator.setFixedHeight(40)
+        self.f2_indicator.setStyleSheet("color: #6272a4; font-weight: bold; background: #3b4261; border-radius: 10px; padding: 0 10px;")
+        input_bar_layout.addWidget(self.f2_indicator)
 
         self.screen_btn = QPushButton("📸")
         self.screen_btn.setObjectName("screen_btn")
@@ -664,35 +719,51 @@ class ScratchpadWindow(QMainWindow):
         self.sidebar_widget.setVisible(not self.sidebar_widget.isVisible())
 
     def toggle_fullscreen(self):
-        """Toggle compositor/application fullscreen from inside the app."""
+        """Toggle application fullscreen (Qt-level, not compositor)."""
         if self.isFullScreen():
             self.showNormal()
             self.raise_()
             self.activateWindow()
             self.fullscreen_btn.setText("⛶")
         else:
-            # On Wayland, use compositor fullscreen if available
-            import os
-            if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
-                try:
-                    import subprocess
-                    subprocess.Popen(["hyprctl", "dispatch", "fullscreen"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    self.fullscreen_btn.setText("⛶")
-                    return
-                except Exception:
-                    pass
+            # Application-level fullscreen (Qt)
             self.showFullScreen()
             self.fullscreen_btn.setText("⛶")
 
+    def toggle_compositor_fullscreen(self):
+        """Toggle compositor fullscreen (Hyprland via hyprctl)."""
+        import os
+        if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
+            try:
+                import subprocess
+                subprocess.Popen(["hyprctl", "dispatch", "fullscreen"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
     def keyPressEvent(self, event):
-        # F11 is a reliable in-app fallback. Super+F also works when Hyprland
-        # does not consume the key combination as a global compositor bind.
+        # F11 → Application fullscreen (Qt)
+        # Super+F → Compositor fullscreen (Hyprland)
+        # F2 → Voice wake/sleep (fallback when window focused)
         is_super_f = (
             event.key() == Qt.Key.Key_F
             and bool(event.modifiers() & Qt.KeyboardModifier.SuperModifier)
         )
-        if event.key() == Qt.Key.Key_F11 or is_super_f:
+        if event.key() == Qt.Key.Key_F11:
             self.toggle_fullscreen()
+            event.accept()
+            return
+        elif is_super_f:
+            self.toggle_compositor_fullscreen()
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_F2:
+            # F2 fallback for voice wake/sleep when window has focus
+            self.toggle_voice_state()
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_F3:
+            # F3 fallback for visibility-only toggle when window has focus
+            self.toggle_window_visibility()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -883,56 +954,29 @@ class ScratchpadWindow(QMainWindow):
 
     def set_voice_button_state(self, state: str):
         state = state.lower()
-        if state == "recording":
-            self.voice_btn.setChecked(True)
-            self.voice_btn.setText("🔴 Recording")
-            self.voice_btn.setToolTip("Recording audio... release to stop")
-            self.voice_btn.setStyleSheet("QPushButton { background: #ff5555; color: white; border: none; border-radius: 10px; padding-left: 5px; padding-right: 5px; }")
+        if state == "listening":
+            self.f2_indicator.setText("🔴 Listening...")
+            self.f2_indicator.setStyleSheet("color: white; font-weight: bold; background: #ff5555; border-radius: 10px; padding: 0 10px;")
             self.input_box.setDisabled(True)
             self.input_box.setPlaceholderText("Listening...")
-            return
-
-        if state == "processing":
-            self.voice_btn.setChecked(True)
-            self.voice_btn.setText("⏳ Processing")
-            self.voice_btn.setToolTip("Transcribing audio...")
-            self.voice_btn.setStyleSheet("QPushButton { background: #ffb86c; color: #11111b; border: none; border-radius: 10px; padding-left: 5px; padding-right: 5px; }")
+        elif state == "thinking":
+            self.f2_indicator.setText("⏳ Thinking...")
+            self.f2_indicator.setStyleSheet("color: #11111b; font-weight: bold; background: #ffb86c; border-radius: 10px; padding: 0 10px;")
             self.input_box.setDisabled(True)
-            self.input_box.setPlaceholderText("Transcribing...")
-            return
+            self.input_box.setPlaceholderText("Thinking...")
+        elif state == "speaking":
+            self.f2_indicator.setText("🔊 Speaking...")
+            self.f2_indicator.setStyleSheet("color: #11111b; font-weight: bold; background: #ff79c6; border-radius: 10px; padding: 0 10px;")
+            self.input_box.setDisabled(True)
+            self.input_box.setPlaceholderText("Speaking...")
+        else:  # sleeping/idle
+            self.f2_indicator.setText("[F2] Wake Voice")
+            self.f2_indicator.setStyleSheet("color: #6272a4; font-weight: bold; background: #3b4261; border-radius: 10px; padding: 0 10px;")
+            self.input_box.setDisabled(False)
+            self.input_box.setPlaceholderText("Type a message or use commands like 'open browser'...")
 
-        self.voice_btn.setChecked(False)
-        self.voice_btn.setText("🎙")
-        self.voice_btn.setToolTip("Hold to talk")
-        self.voice_btn.setStyleSheet("QPushButton { background: #3b4261; color: white; border: none; border-radius: 10px; }")
-        self.input_box.setDisabled(False)
-        self.input_box.setPlaceholderText("Type a message or use commands like 'open browser'...")
 
 
-    def start_voice_capture(self):
-        # If voice assistant is active, route to Gemini Live
-        if self.voice_assistant_active and self.live_agent:
-            self.live_agent.is_recording = True
-            self.live_agent.set_mic_muted(False)  # Unmute mic for push-to-talk
-            self.set_voice_button_state("recording")
-            self.voice_in_progress = True
-            return
-            
-        # Otherwise use local transcription (legacy path)
-        if self.voice_in_progress:
-            return
-        
-        self.voice_in_progress = True
-        self.voice_cancel_requested = False
-        self.set_voice_button_state("recording")
-        
-        from tools.browser import start_continuous_recording
-        self.voice_recording_proc, self.voice_audio_path = start_continuous_recording()
-
-        # Fallback if no backend
-        if not self.voice_recording_proc:
-            self.voice_in_progress = False
-            self.set_voice_button_state("idle")
             self.add_system_message_to_feed("Voice capture failed. Missing `arecord`, `ffmpeg`, or `sox`.", is_error=True)
             return
 
@@ -1014,6 +1058,18 @@ class ScratchpadWindow(QMainWindow):
         self.input_box.setPlainText("Describe the active window.")
         self.send_message()
 
+    def _append_conversation_message(self, role: str, text: str):
+        if not self.current_session_id:
+            return None  # No session, cannot append
+        
+        insert_message(self.current_session_id, role, text)
+        self.chat_history.append({"role": role, "content": text})
+
+        bubble = MessageBubble(role, text)
+        self.chat_feed_layout.addWidget(bubble)
+        QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
+        return bubble
+
     def send_message(self):
         text = self.input_box.toPlainText().strip()
         if not text:
@@ -1076,12 +1132,7 @@ class ScratchpadWindow(QMainWindow):
             if message.get("role") in {"user", "assistant"}
         ]
 
-        insert_message(session_id, "user", text)
-        self.chat_history.append({"role": "user", "content": text})
-
-        user_bubble = MessageBubble("user", text)
-        self.chat_feed_layout.addWidget(user_bubble)
-        QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
+        user_bubble = self._append_conversation_message("user", text)
 
         ai_bubble = MessageBubble("assistant", "")
         self.chat_feed_layout.addWidget(ai_bubble)
@@ -1176,23 +1227,24 @@ class ScratchpadWindow(QMainWindow):
 
 
     def _setup_toggle_watcher(self):
-        """Set up file watcher for F1/F3 keybind toggle."""
+        """Set up file watcher for keybind toggles."""
         from PyQt6.QtCore import QFileSystemWatcher
         
-        # Create toggle file if it doesn't exist
-        try:
-            with open(TOGGLE_FILE, 'w') as f:
-                f.write("0")
-        except Exception:
-            pass
+        # Create toggle files if they don't exist
+        for tf in [TOGGLE_FILE, VOICE_TOGGLE_FILE]:
+            try:
+                with open(tf, 'w') as f:
+                    f.write("0")
+            except Exception:
+                pass
         
-        self._toggle_watcher = QFileSystemWatcher([TOGGLE_FILE], self)
+        self._toggle_watcher = QFileSystemWatcher([TOGGLE_FILE, VOICE_TOGGLE_FILE], self)
         self._toggle_watcher.fileChanged.connect(self._on_toggle_file_changed)
         self._last_toggle_time = 0
-        print(f"[Toggle] Watching {TOGGLE_FILE} for visibility toggle requests", flush=True)
+        print(f"[Toggle] Watching toggle files", flush=True)
 
     def _on_toggle_file_changed(self, path: str):
-        """Handle toggle file change - toggle window visibility."""
+        """Handle toggle file change."""
         import time
         current_time = time.time()
         # Debounce: ignore changes within 500ms
@@ -1200,14 +1252,93 @@ class ScratchpadWindow(QMainWindow):
             return
         self._last_toggle_time = current_time
         
+        if path == VOICE_TOGGLE_FILE:
+            print(f"[Toggle] Voice file changed, toggling voice", flush=True)
+            self.toggle_voice_state()
+            return
+            
         try:
             with open(path, 'r') as f:
                 content = f.read().strip()
-            # Toggle on any content change
             print(f"[Toggle] File changed, toggling visibility", flush=True)
             self.toggle_window_visibility()
         except Exception as e:
             print(f"[Toggle] Error reading toggle file: {e}", flush=True)
+
+    def toggle_voice_state(self):
+        """Toggles voice awakening manually. Auto-starts voice assistant if not running."""
+        if not self.live_agent:
+            # Voice assistant not running, start it first
+            self.start_voice_assistant()
+            # Give it a moment to start, then wake
+            QTimer.singleShot(1000, lambda: self._wake_voice_if_ready())
+            return
+        
+        if getattr(self.live_agent.voice_state, 'state', None) == "sleeping":
+            self.live_agent.wake_voice()
+            self.set_voice_button_state("listening")
+        else:
+            self.live_agent.sleep_voice()
+            self.set_voice_button_state("idle")
+
+    def _wake_voice_if_ready(self):
+        """Wake voice after assistant has started."""
+        if self.live_agent and getattr(self.live_agent.voice_state, 'state', None) == "sleeping":
+            self.live_agent.wake_voice()
+            self.set_voice_button_state("listening")
+
+    def start_voice_assistant(self):
+        """Start the voice assistant (Gemini Live)."""
+        if self.voice_assistant_active:
+            return
+        try:
+            from providers.gemini_live import start_agent_in_thread
+        except Exception as error:
+            self.add_system_message_to_feed(f"Voice assistant could not start: {error}", is_error=True)
+            return
+
+        self.voice_assistant_active = True
+        self.voice_assistant_btn.setChecked(True)
+        self.voice_assistant_btn.setText("🛑 Stop Voice Assistant")
+        self.connection_state_label.setText("● Live: Connecting...")
+        self.connection_state_label.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px; margin-left: 5px;")
+        self.voice_state_label.setText("● Voice: Sleeping")
+        self.voice_state_label.setStyleSheet("color: #6272a4; font-weight: bold; font-size: 11px; margin-left: 10px;")
+
+        global_agent_ref = [None]
+
+        def run_live_agent():
+            try:
+                start_agent_in_thread(
+                    volume_cb=self.live_volume_signal.emit,
+                    text_cb=self.live_text_signal.emit,
+                    state_cb=self.live_connection_signal.emit,      # Connection state
+                    voice_state_cb=self.live_voice_signal.emit,     # Voice state
+                    bubble_cb=self.live_bubble_signal.emit,
+                    glow_cb=self.live_glow_signal.emit,
+                    assistant_bridge=self.assistant_bridge,
+                    global_agent_ref=global_agent_ref,
+                )
+            except Exception as error:
+                logger = get_logger("ui")
+                logger.error(f"Gemini Live thread error: {error}", exc_info=True)
+                QTimer.singleShot(0, lambda: self._handle_live_start_failure(str(error)))
+
+        def capture_agent():
+            agent = global_agent_ref[0]
+            if agent is not None:
+                self.live_agent = agent
+                self._update_connection_state(agent.get_connection_state())
+                return
+            if self.live_agent_thread is not None and not self.live_agent_thread.is_alive():
+                self._handle_live_start_failure("Gemini Live thread exited before establishing a connection.")
+                return
+            QTimer.singleShot(250, capture_agent)
+
+        self.live_agent_thread = threading.Thread(target=run_live_agent, daemon=True)
+        self.live_agent_thread.start()
+        QTimer.singleShot(250, capture_agent)
+        self.add_system_message_to_feed("Starting voice assistant...", is_error=False)
 
     from PyQt6.QtCore import pyqtSlot
 
@@ -1215,7 +1346,7 @@ class ScratchpadWindow(QMainWindow):
     def on_agent_event(self, event: AgentEvent):
         if event.type == "LOG":
             msg = event.payload.get("msg", "")
-            self.heavy_agent_status_label.setText(f"Status: {msg}")
+            self.task_state_label.setText(f"● Task: {msg[:50]}...")
             # Also append to terminal workspace
             self._append_to_workspace(msg)
             return
@@ -1224,7 +1355,7 @@ class ScratchpadWindow(QMainWindow):
         if event.type == "TASK_STARTED":
             desc = event.payload.get("description", "Unknown Task")
             # Heavy agent is now executing a task
-            self.heavy_agent_status_label.setText("Status: Executing Task...")
+            self.task_state_label.setText("● Task: Running...")
             bubble = MessageBubble("system", "", is_error=False)
             self.task_panels[task_id] = {
                 "bubble": bubble,
@@ -1238,7 +1369,7 @@ class ScratchpadWindow(QMainWindow):
             
             # Increment active task count and show workspace
             self._active_task_count += 1
-            self._update_workspace_visibility()
+            pass # Removed auto-show for context based logic
             self._append_to_workspace(f"[Task Started] {desc}")
             return
 
@@ -1248,8 +1379,12 @@ class ScratchpadWindow(QMainWindow):
             steps = panel["steps"]
 
             if event.type == "TOOL_REQUESTED":
+                if tool_name in ["execute_shell", "read_file", "write_file", "search", "PythonExec"]:
+                    if not self.terminal_text_area.isVisible():
+                        self.terminal_text_area.setVisible(True)
+                        self.terminal_toggle_btn.setText("▼ Agent Workspace")
                 steps.append({"name": tool_name, "status": "running"})
-                self.heavy_agent_status_label.setText(f"Status: Tool Requested -> {tool_name}")
+                self.task_state_label.setText(f"● Task: Tool -> {tool_name}")
             elif event.type == "TOOL_FINISHED":
                 status = event.payload.get("status", "unknown")
                 for step in reversed(steps):
@@ -1257,6 +1392,9 @@ class ScratchpadWindow(QMainWindow):
                         step["status"] = "success" if status == "success" else "error"
                         break
             elif event.type == "APPROVAL_REQUIRED":
+                if not self.terminal_text_area.isVisible():
+                    self.terminal_text_area.setVisible(True)
+                    self.terminal_toggle_btn.setText("▼ Agent Workspace")
                 for step in reversed(steps):
                     if step["name"] == tool_name and step["status"] == "running":
                         step["status"] = "pending_approval"
@@ -1279,7 +1417,7 @@ class ScratchpadWindow(QMainWindow):
             reason = event.payload.get("reason", "")
             risk_level = event.payload.get("risk_level", "medium")
             arguments = event.payload.get("arguments", {})
-            self.heavy_agent_status_label.setText(f"Status: Waiting for Approval ({tool_name})")
+            self.task_state_label.setText(f"● Task: Waiting Approval ({tool_name})")
             if not isinstance(approval_id, str):
                 self.on_error_occurred("Approval Error", "Approval request did not include a valid identifier.")
                 return
@@ -1335,7 +1473,7 @@ class ScratchpadWindow(QMainWindow):
             self._append_to_workspace("[Task Completed]")
             # Update heavy agent status: Idle if no more tasks, else still executing
             if self._active_task_count == 0:
-                self.heavy_agent_status_label.setText("Status: Idle")
+                self.task_state_label.setText("● Task: Idle")
         elif event.type == "TASK_FAILED":
             err = event.payload.get("error", "Unknown error")
             if panel:
@@ -1346,9 +1484,25 @@ class ScratchpadWindow(QMainWindow):
             self._active_task_count = max(0, self._active_task_count - 1)
             self._update_workspace_visibility()
             self._append_to_workspace(f"[Task Failed] {err}")
-            # Update heavy agent status: Idle if no more tasks, else still executing
+            # Update task state: Idle if no more tasks, else still executing
             if self._active_task_count == 0:
-                self.heavy_agent_status_label.setText("Status: Idle")
+                self.task_state_label.setText("● Task: Idle")
+
+        # Handle shell events from ToolExecutor (SHELL_COMMAND, SHELL_OUTPUT, SHELL_EXIT)
+        if event.type in {"SHELL_COMMAND", "SHELL_OUTPUT", "SHELL_EXIT"}:
+            if not self.terminal_text_area.isVisible():
+                self.terminal_text_area.setVisible(True)
+                self.terminal_toggle_btn.setText("▼ Agent Workspace")
+            
+            if event.type == "SHELL_COMMAND":
+                cmd = event.payload.get("command", "")
+                self.terminal_text_area.append_command(cmd)
+            elif event.type == "SHELL_OUTPUT":
+                chunk = event.payload.get("chunk", "")
+                self.terminal_text_area.append_output(chunk)
+            elif event.type == "SHELL_EXIT":
+                exit_code = event.payload.get("exit_code", 0)
+                self.terminal_text_area.append_exit(exit_code)
 
     def _render_task_panel(self, task_id: str):
         panel = self.task_panels.get(task_id)
@@ -1425,8 +1579,10 @@ class ScratchpadWindow(QMainWindow):
             self.voice_assistant_active = False
             self.voice_assistant_btn.setChecked(False)
             self.voice_assistant_btn.setText("🎤 Voice Assistant")
-            self.voice_connection_label.setText("🔴 Disconnected")
-            self.voice_connection_label.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 11px; margin-left: 5px;")
+            self.connection_state_label.setText("● Live: Disconnected")
+            self.connection_state_label.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 11px; margin-left: 5px;")
+            self.voice_state_label.setText("● Voice: Sleeping")
+            self.voice_state_label.setStyleSheet("color: #6272a4; font-weight: bold; font-size: 11px; margin-left: 10px;")
             
             if self.live_agent:
                 self.live_agent.stop_event.set()
@@ -1454,8 +1610,10 @@ class ScratchpadWindow(QMainWindow):
             self.voice_assistant_active = True
             self.voice_assistant_btn.setChecked(True)
             self.voice_assistant_btn.setText("🛑 Stop Voice Assistant")
-            self.voice_connection_label.setText("🟡 Connecting...")
-            self.voice_connection_label.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px; margin-left: 5px;")
+            self.connection_state_label.setText("● Live: Connecting...")
+            self.connection_state_label.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px; margin-left: 5px;")
+            self.voice_state_label.setText("● Voice: Sleeping")
+            self.voice_state_label.setStyleSheet("color: #6272a4; font-weight: bold; font-size: 11px; margin-left: 10px;")
 
             # The Live provider owns its own asyncio loop. The UI only owns the
             # background thread that runs it.
@@ -1466,7 +1624,8 @@ class ScratchpadWindow(QMainWindow):
                     start_agent_in_thread(
                         volume_cb=self.live_volume_signal.emit,
                         text_cb=self.live_text_signal.emit,
-                        state_cb=self.live_state_signal.emit,
+                        state_cb=self.live_connection_signal.emit,      # Connection state
+                        voice_state_cb=self.live_voice_signal.emit,     # Voice state
                         bubble_cb=self.live_bubble_signal.emit,
                         glow_cb=self.live_glow_signal.emit,
                         assistant_bridge=self.assistant_bridge,
@@ -1508,39 +1667,28 @@ class ScratchpadWindow(QMainWindow):
         self.add_system_message_to_feed(f"Voice assistant error: {message}", is_error=True)
 
     def _update_connection_state(self, state: str):
-        """Update the connection state indicator."""
-        state_colors = {
-            "disconnected": ("🔴 Disconnected", "#ff5555"),
-            "connecting": ("🟡 Connecting...", "#ffb86c"),
-            "connected": ("🟢 Connected", "#50fa7b"),
-            "reconnecting": ("🔄 Reconnecting...", "#ffb86c"),
-            "reconnected": ("🟢 Reconnected", "#50fa7b"),
-            "error": ("🔴 Error", "#ff5555"),
+        """Update the connection state indicator (Live session only)."""
+        state_map = {
+            "disconnected": ("● Live: Disconnected", "#ff5555"),
+            "connecting": ("● Live: Connecting...", "#ffb86c"),
+            "connected": ("● Live: Connected", "#50fa7b"),
+            "reconnecting": ("● Live: Reconnecting...", "#ffb86c"),
+            "error": ("● Live: Error", "#ff5555"),
         }
-        text, color = state_colors.get(state, (state, "#c0caf5"))
-        self.voice_connection_label.setText(text)
-        self.voice_connection_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 5px;")
-        
-        # Auto-transition from "reconnected" to "connected" after a short delay
-        if state == "reconnected":
-            QTimer.singleShot(2000, lambda: self._update_connection_state("connected") if self.voice_connection_label.text() == "🟢 Reconnected" else None)
+        text, color = state_map.get(state, (f"● Live: {state}", "#c0caf5"))
+        self.connection_state_label.setText(text)
+        self.connection_state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 5px;")
+        # No auto-transition or chat messages for reconnection
 
     @pyqtSlot(AssistantEvent)
     def _on_assistant_event(self, event: AssistantEvent):
         """Handle events from the AssistantBridge."""
         if event.type == "approval_required":
-            # Show approval request in chat
+            # Show approval request in chat (important for user action)
             msg = f"⚠️ **Approval Required**\nTask: {event.summary}\nRisk: {event.risk}\nApproval ID: {event.approval_id}"
             self.add_system_message_to_feed(msg, is_error=False)
-        elif event.type == "task_started":
-            self.add_system_message_to_feed(f"🤖 Agent started: {event.summary}", is_error=False)
-        elif event.type == "task_completed":
-            self.add_system_message_to_feed(f"✅ Agent completed: {event.summary}", is_error=False)
-        elif event.type == "task_failed":
-            self.add_system_message_to_feed(f"❌ Agent failed: {event.summary}", is_error=True)
-        elif event.type == "tool_progress":
-            if event.progress:
-                self.add_system_message_to_feed(f"⚙️ {event.progress}", is_error=False)
+        # task_started, task_completed, task_failed, tool_progress -> only update status bar, NOT chat
+        # (they already update task_state_label in on_agent_event)
         
         # Also forward to Gemini Live if connected
         if self.live_agent:
@@ -1552,9 +1700,24 @@ class ScratchpadWindow(QMainWindow):
     def _on_live_text(self, role: str, text: str):
         """Handle text from Gemini Live session."""
         if role == "model":
-            self.add_system_message_to_feed(f"🎤 {text}", is_error=False)
+            if not hasattr(self, "_current_live_bubble") or self._current_live_bubble is None:
+                self._current_live_bubble = MessageBubble("assistant", text)
+                self.chat_feed_layout.addWidget(self._current_live_bubble)
+                self._current_live_text = text
+            else:
+                self._current_live_text += text
+                self._current_live_bubble.browser.setMarkdown(self._current_live_text)
+            QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
+        elif role == "model_turn_complete":
+            if hasattr(self, "_current_live_text") and self._current_live_text:
+                if self.current_session_id:
+                    insert_message(self.current_session_id, "assistant", self._current_live_text)
+                    self.chat_history.append({"role": "assistant", "content": self._current_live_text})
+            self._current_live_bubble = None
+            self._current_live_text = ""
         elif role == "user":
-            pass  # User input is handled via push-to-talk
+            if text.strip():
+                self._append_conversation_message("user", text)
         elif role == "system":
             self.add_system_message_to_feed(text, is_error=False)
 
@@ -1562,23 +1725,22 @@ class ScratchpadWindow(QMainWindow):
         """Handle connection state changes from Gemini Live."""
         self._update_connection_state(state)
         
-        # Update assistant state indicator
-        state_map = {
-            "idle": ("🎙️ Idle", "#8be9fd"),
-            "listening": ("🎙️ Listening", "#50fa7b"),
-            "thinking": ("🤔 Thinking", "#ffb86c"),
-            "talking": ("🔊 Speaking", "#ff79c6"),
-            "connecting": ("🔄 Connecting...", "#ffb86c"),
-            "reconnecting": ("🔄 Reconnecting...", "#ffb86c"),
-            "connected": ("🎙️ Ready", "#50fa7b"),
-            "reconnected": ("🎙️ Ready", "#50fa7b"),
-            "disconnected": ("🔴 Disconnected", "#ff5555"),
-            "error": ("🔴 Error", "#ff5555"),
+        # Update voice state indicator (not connection state)
+        voice_state_map = {
+            "idle": ("● Voice: Sleeping", "#6272a4"),
+            "listening": ("● Voice: Listening", "#50fa7b"),
+            "thinking": ("● Voice: Thinking", "#ffb86c"),
+            "talking": ("● Voice: Speaking", "#ff79c6"),
+            "connecting": ("● Voice: Sleeping", "#6272a4"),
+            "reconnecting": ("● Voice: Sleeping", "#6272a4"),
+            "connected": ("● Voice: Sleeping", "#6272a4"),
+            "reconnected": ("● Voice: Sleeping", "#6272a4"),
+            "disconnected": ("● Voice: Sleeping", "#6272a4"),
+            "error": ("● Voice: Error", "#ff5555"),
         }
-        text, color = state_map.get(state, (state, "#c0caf5"))
-        if hasattr(self, 'assistant_state_label'):
-            self.assistant_state_label.setText(text)
-            self.assistant_state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 10px;")
+        text, color = voice_state_map.get(state, (f"● Voice: {state}", "#c0caf5"))
+        self.voice_state_label.setText(text)
+        self.voice_state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 10px;")
 
     def _on_live_bubble(self, text: str):
         """Handle bubble messages from Gemini Live."""
@@ -1588,25 +1750,43 @@ class ScratchpadWindow(QMainWindow):
         """Handle glow state from Gemini Live - sync with visualizer."""
         if self.visualizer_glow_emitter:
             self.visualizer_glow_emitter.emit(state)
-        # Also update assistant state from glow
-        glow_to_state = {
-            "connected": "idle",
-            "connecting": "connecting",
+        # Also update voice state from glow
+        glow_to_voice = {
+            "connected": "sleeping",
+            "connecting": "sleeping",
             "thinking": "thinking",
             "vision": "thinking",
         }
-        if state in glow_to_state and hasattr(self, 'assistant_state_label'):
-            mapped_state = glow_to_state[state]
-            state_map = {
-                "idle": ("🎙️ Idle", "#8be9fd"),
-                "listening": ("🎙️ Listening", "#50fa7b"),
-                "thinking": ("🤔 Thinking", "#ffb86c"),
-                "talking": ("🔊 Speaking", "#ff79c6"),
-                "connecting": ("🔄 Connecting...", "#ffb86c"),
+        if state in glow_to_voice:
+            voice_state = glow_to_voice[state]
+            voice_state_map = {
+                "sleeping": ("● Voice: Sleeping", "#6272a4"),
+                "listening": ("● Voice: Listening", "#50fa7b"),
+                "thinking": ("● Voice: Thinking", "#ffb86c"),
+                "speaking": ("● Voice: Speaking", "#ff79c6"),
             }
-            text, color = state_map.get(mapped_state, (mapped_state, "#c0caf5"))
-            self.assistant_state_label.setText(text)
-            self.assistant_state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 10px;")
+            text, color = voice_state_map.get(voice_state, (voice_state, "#c0caf5"))
+            self.voice_state_label.setText(text)
+            self.voice_state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 10px;")
+
+    def _on_live_connection_state(self, state: str):
+        """Handle connection state changes from Gemini Live."""
+        self._update_connection_state(state)
+        # Connection state changes don't affect voice state indicator
+
+    def _on_live_voice_state(self, state: str):
+        """Handle voice state changes from Gemini Live."""
+        voice_state_map = {
+            "idle": ("● Voice: Sleeping", "#6272a4"),
+            "sleeping": ("● Voice: Sleeping", "#6272a4"),
+            "listening": ("● Voice: Listening", "#50fa7b"),
+            "thinking": ("● Voice: Thinking", "#ffb86c"),
+            "speaking": ("● Voice: Speaking", "#ff79c6"),
+            "error": ("● Voice: Error", "#ff5555"),
+        }
+        text, color = voice_state_map.get(state, (f"● Voice: {state}", "#c0caf5"))
+        self.voice_state_label.setText(text)
+        self.voice_state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px; margin-left: 10px;")
 
     def toggle_window_visibility(self):
         if self.isVisible():

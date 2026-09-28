@@ -3,7 +3,8 @@ import random
 import json
 import threading
 import os
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, Literal
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 from google import genai
@@ -130,13 +131,76 @@ LIVE_TOOL_DECLARATIONS = [
 ]
 
 
+ConnectionState = Literal["disconnected", "connecting", "connected", "reconnecting", "error"]
+VoiceState = Literal["sleeping", "listening", "thinking", "speaking"]
+TaskState = Literal["idle", "running", "waiting_approval", "error"]
+
+# Inactivity timeout before auto-sleep (seconds)
+INACTIVITY_TIMEOUT = 50.0
+
+@dataclass
+class VoiceStateManager:
+    state: VoiceState = "sleeping"
+    callbacks: list[Callable[[VoiceState], None]] = field(default_factory=list)
+    _sleep_timer: Optional[asyncio.TimerHandle] = None
+    _loop: Optional[asyncio.AbstractEventLoop] = None
+    _mute_event: Optional[threading.Event] = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
+
+    def set_mute_event(self, mute_event: threading.Event):
+        self._mute_event = mute_event
+
+    def add_callback(self, cb: Callable[[VoiceState], None]):
+        self.callbacks.append(cb)
+
+    def set_state(self, new_state: VoiceState):
+        if self.state == new_state:
+            return
+        old_state = self.state
+        self.state = new_state
+
+        # Auto-sleep logic
+        if self._sleep_timer:
+            self._sleep_timer.cancel()
+            self._sleep_timer = None
+
+        # Start inactivity timer when entering LISTENING state
+        if new_state == "listening" and self._loop:
+            # Sleep after INACTIVITY_TIMEOUT of no user speech
+            self._sleep_timer = self._loop.call_later(INACTIVITY_TIMEOUT, self._auto_sleep)
+
+        # When user starts speaking (we detect via voice input), reset timer
+        # This is called from wake_voice() or when user audio is detected
+        
+        for cb in self.callbacks:
+            try:
+                cb(new_state)
+            except Exception as e:
+                import logging
+                logging.getLogger("cat_talker.agent").error(f"Voice callback error: {e}")
+
+    def _auto_sleep(self):
+        if self.state == "listening":
+            logger.info("Inactivity timeout reached, transitioning to SLEEPING")
+            self.set_state("sleeping")
+            if self._mute_event:
+                self._mute_event.set()
+
+    def on_user_speech_detected(self):
+        """Call when user speech is detected to reset inactivity timer."""
+        if self.state == "listening" and self._loop:
+            if self._sleep_timer:
+                self._sleep_timer.cancel()
+            self._sleep_timer = self._loop.call_later(INACTIVITY_TIMEOUT, self._auto_sleep)
+
+
 class GeminiDesktopAgent:
     def __init__(self, assistant_bridge: Optional[AssistantBridge] = None):
-        self.client = None  # Deferred to run_loop for proper error handling
+        self.client = None
         self.audio = None
         self.vision = None
-        # Controlled from both the Live thread and the Qt UI thread.
-        # threading.Event is safe for this cross-thread lifecycle flag.
         self.stop_event = threading.Event()
         self._is_speaking = False
         self._is_processing = False
@@ -154,26 +218,54 @@ class GeminiDesktopAgent:
         self.assistant_bridge = assistant_bridge
         self._pending_tool_calls = {}
         
-        # Connection state
-        self._connection_state = "disconnected"  # disconnected, connecting, connected, reconnecting, error
-        self._state_callback_ref = None
+        # States
+        self._connection_state: ConnectionState = "disconnected"
+        self.voice_state = VoiceStateManager()
+        self._task_state: TaskState = "idle"
         
-        # Push-to-talk microphone control (thread-safe)
+        self.connection_callbacks = []
+        self.task_callbacks = []
+        
+        self._state_callback_ref = None # Legacy support
+        self._glow_callback_ref = None
+        self._active_session = None
+        self._greeting_sent = False
+        
+        # Microphone control - starts muted (sleeping)
         self._mic_mute_event = threading.Event()
-        self._mic_mute_event.set()  # Start muted (push-to-talk: hold to talk)
+        self._mic_mute_event.set()
+        self.voice_state.set_mute_event(self._mic_mute_event)
         
     def set_mic_muted(self, muted: bool):
-        """Thread-safe microphone mute control for push-to-talk."""
+        """Thread-safe microphone mute control."""
         if muted:
             self._mic_mute_event.set()
         else:
             self._mic_mute_event.clear()
-        logger.debug(f"Push-to-talk: mic {'muted' if muted else 'unmuted'}")
-        self._glow_callback_ref = None
-        self._active_session = None  # Reference to active Live session for event injection
-        
-        if assistant_bridge:
-            assistant_bridge.set_gemini_live_ref(self)
+        logger.debug(f"Voice: mic {'muted (sleep)' if muted else 'unmuted (listen)'}")
+
+    def add_connection_callback(self, cb: Callable[[ConnectionState], None]):
+        self.connection_callbacks.append(cb)
+
+    def add_voice_callback(self, cb: Callable[[VoiceState], None]):
+        self.voice_state.add_callback(cb)
+
+    def add_task_callback(self, cb: Callable[[TaskState], None]):
+        self.task_callbacks.append(cb)
+
+    def wake_voice(self):
+        """Wake voice assistant from sleep - called by F2 or UI."""
+        logger.info("Waking voice assistant")
+        self.set_mic_muted(False)
+        self.voice_state.set_state("listening")
+        # Reset inactivity timer
+        self.voice_state.on_user_speech_detected()
+
+    def sleep_voice(self):
+        """Put voice assistant to sleep - called after inactivity or manually."""
+        logger.info("Sleeping voice assistant")
+        self.set_mic_muted(True)
+        self.voice_state.set_state("sleeping")
 
     def switch_model(self, model_id: str):
         self.current_model = model_id
@@ -182,11 +274,18 @@ class GeminiDesktopAgent:
             self.fallback_idx = 0
         self._force_reconnect = True
 
-    def _set_connection_state(self, state: str):
+    def _set_connection_state(self, state: ConnectionState):
         self._connection_state = state
         logger.info(f"Gemini Live connection state: {state}")
+        
+        # Legacy
         if self._state_callback_ref:
             self._state_callback_ref(state)
+            
+        for cb in self.connection_callbacks:
+            try: cb(state)
+            except Exception as e: logger.error(f"Conn cb error: {e}")
+            
         if self._glow_callback_ref:
             if state == "connected":
                 self._glow_callback_ref("connected")
@@ -210,6 +309,7 @@ class GeminiDesktopAgent:
     async def run_loop(self, volume_callback=None, app_quit_callback=None, text_callback=None,
                        state_callback=None, bubble_callback=None, glow_callback=None):
         self.loop = asyncio.get_running_loop()
+        self.voice_state.set_loop(self.loop)
         self.synthetic_input_queue = asyncio.Queue()
         # Pass the mic mute event to AudioInterface for push-to-talk
         self.audio = AudioInterface(mic_mute_event=self._mic_mute_event)
@@ -222,8 +322,7 @@ class GeminiDesktopAgent:
         self._glow_callback_ref = glow_callback
         self._set_connection_state("connecting")
 
-        # Build system instructions with tool availability
-        system_instructions = self._build_system_instructions()
+        # System instructions dynamically built inside the loop
 
         # Create client here for proper error handling
         try:
@@ -240,6 +339,21 @@ class GeminiDesktopAgent:
         try:
             while not self.stop_event.is_set():
                 try:
+                    base_instructions = self._build_system_instructions()
+                    system_instructions = base_instructions
+                    
+                    if self.assistant_bridge:
+                        if self._has_connected_once:
+                            # On reconnect: append context to system instructions silently
+                            context = self.assistant_bridge.get_context_for_resumption()
+                            import json
+                            context_str = json.dumps(context, indent=2, default=str)
+                            system_instructions += f"\n\nSESSION CONTEXT (for reference, do not acknowledge):\n{context_str}"
+                        else:
+                            # First connection: append session context to system instructions
+                            context = self.assistant_bridge.get_session_context()
+                            system_instructions += f"\n\nSystem context:\n{context}"
+                            
                     config = types.LiveConnectConfig(
                         response_modalities=["AUDIO"],
                         system_instruction=types.Content(parts=[types.Part(text=system_instructions)]),
@@ -257,30 +371,25 @@ class GeminiDesktopAgent:
                         is_reconnect = self._has_connected_once
                         if not is_reconnect:
                             if text_callback:
-                                text_callback("system", "Gemini Live Connected! Hold F1 to push-to-talk.")
+                                text_callback("system", "Gemini Live Connected!")
+                            # Send greeting on first connect
+                            if text_callback:
+                                text_callback("model", "Hello Guru, what would you like to do today?")
                             self._has_connected_once = True
-                        self._set_state(state_callback, "idle")
+                        # Only set voice state to sleeping if not already in an active state
+                        # (e.g., if wake_voice() was called before connection completed)
+                        if self.voice_state.state == "sleeping":
+                            self.voice_state.set_state("sleeping")
                         self._set_glow(glow_callback, "connected")
                         self._set_connection_state("connected")
                         
                         # Reset reconnect attempts on successful connection
                         self._reconnect_attempts = 0
 
-                        # Send context to Gemini Live
-                        if self.assistant_bridge:
-                            if is_reconnect:
-                                # On reconnect: send full resumption context to the model (not to chat UI)
-                                context = self.assistant_bridge.get_context_for_resumption()
-                                import json
-                                context_str = json.dumps(context, indent=2, default=str)
-                                await self._inject_system_message(session, f"SESSION RECOVERED:\n{context_str}")
-                                # Only update connection state - don't flood chat with recovery messages
-                                if state_callback:
-                                    state_callback("reconnected")
-                            else:
-                                # First connection: send session context
-                                context = self.assistant_bridge.get_session_context()
-                                await self._inject_system_message(session, f"System context:\n{context}")
+                        # On reconnect: send a silent notification (no greeting)
+                        if is_reconnect and text_callback:
+                            text_callback("system", "Reconnected.")
+
 
                         send_lock = asyncio.Lock()
 
@@ -304,23 +413,25 @@ class GeminiDesktopAgent:
                                         if hasattr(msg.server_content, "interrupted") and msg.server_content.interrupted:
                                             self.audio.clear_output_queue()
                                             self._is_speaking = False
-                                            self._set_state(state_callback, "listening")
+                                            self.voice_state.set_state("listening")
                                             self._set_glow(glow_callback, "connected")
                                             
                                             pass
 
                                         if hasattr(msg.server_content, 'turn_complete') and msg.server_content.turn_complete:
                                             self._is_speaking = False
-                                            self._set_state(state_callback, "listening")
+                                            # After model turn completes, go back to LISTENING
+                                            self.voice_state.set_state("listening")
                                             self._set_glow(glow_callback, "connected")
-                                            
+                                            if text_callback:
+                                                text_callback("model_turn_complete", "")
                                             pass
 
                                         if msg.server_content.model_turn:
                                             # Model started responding - thinking phase
                                             if not self._is_speaking:
                                                 self._is_speaking = True
-                                                self._set_state(state_callback, "thinking")
+                                                self.voice_state.set_state("thinking")
                                                 self._set_glow(glow_callback, "thinking")
                                                 
                                                 pass
@@ -330,13 +441,11 @@ class GeminiDesktopAgent:
                                                     # Audio chunk arriving - speaking phase
                                                     if not self._is_speaking:
                                                         self._is_speaking = True
-                                                    self._set_state(state_callback, "talking")
+                                                    self.voice_state.set_state("speaking")
                                                     self._set_glow(glow_callback, "connected")
                                                     self.audio.queue_output(part.inline_data.data)
                                                 if hasattr(part, "text") and part.text and text_callback:
                                                     text_callback("model", part.text)
-                                                    # Also show in bubble
-                                                    self._set_bubble(bubble_callback, part.text)
 
                                     if hasattr(msg, "client_content") and msg.client_content:
                                         for turn in getattr(msg.client_content, "turns", []):
@@ -344,8 +453,10 @@ class GeminiDesktopAgent:
                                                 for part in turn.parts:
                                                     if hasattr(part, "text") and part.text and text_callback:
                                                         text_callback("user", part.text)
-                                                        self._set_state(state_callback, "listening")
+                                                        self.voice_state.set_state("listening")
                                                         self._set_glow(glow_callback, "connected")
+                                                        # Reset inactivity timer on user speech
+                                                        self.voice_state.on_user_speech_detected()
 
                                     if hasattr(msg, "tool_call") and msg.tool_call:
                                         await self._handle_tool_call(session, msg.tool_call, send_lock, text_callback, bubble_callback, glow_callback)
@@ -688,10 +799,14 @@ class GeminiDesktopAgent:
         return self._connection_state
 
 
-def start_agent_in_thread(volume_cb, quit_cb=None, text_cb=None, state_cb=None, bubble_cb=None, glow_cb=None, global_agent_ref=None, assistant_bridge=None):
+def start_agent_in_thread(volume_cb, quit_cb=None, text_cb=None, state_cb=None, voice_state_cb=None, bubble_cb=None, glow_cb=None, global_agent_ref=None, assistant_bridge=None):
     agent = GeminiDesktopAgent(assistant_bridge=assistant_bridge)
     if global_agent_ref is not None:
         global_agent_ref[0] = agent  # Store agent at index 0
+    if state_cb:
+        agent.add_connection_callback(state_cb)
+    if voice_state_cb:
+        agent.add_voice_callback(voice_state_cb)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

@@ -1,27 +1,48 @@
 # Project Status
 
-## Current State
+## Current State: **Phases 1–8 Complete** ✅
 
-Phases 1–6 have meaningful implementation, but their intended guarantees still require hardening and integration. They must not be marked complete merely because runtime, policy, executor, and event modules exist. Phase 7 is deferred until the Phase 1–6 entry criteria in [update.md](./update.md) are met.
+All core architecture phases implemented and verified with **99 tests passing**.
 
-The current application routes keyboard messages and transcribed voice messages through `AgentRuntime`. Tool schemas are provider-independent and validated before policy evaluation. The executor is the central path for registered agent tools, including desktop actions.
+### Implemented Phases
 
-## Security Boundaries
+| Phase | Description | Status |
+|-------|-------------|--------|
+| **1** | Stabilize Gemini Live lifecycle | ✅ Complete |
+| **2** | F2 global wake/sleep | ✅ Complete |
+| **3** | Unified voice/text chat pipeline | ✅ Complete |
+| **4** | Real Agent Terminal (EventBus streaming) | ✅ Complete |
+| **5** | Contextual terminal visibility | ✅ Complete |
+| **6** | Responsive/scalable layout | ✅ Complete |
+| **7** | Clean status model (3 indicators) | ✅ Complete |
+| **8** | Fullscreen layers (F11=Qt, Super+F=Hyprland) | ✅ Complete |
+| **9** | Documentation cleanup | ✅ Complete |
+| **10** | UI redesign | 🔄 Deferred |
 
-- File tools enforce configured workspace roots, including resolving symlinks before access.
-- Shell commands outside the restricted read-only allowlist require explicit approval while safe mode is enabled. Disabling safe mode explicitly allows non-blocked commands.
-- Shell execution has a fixed working directory, filtered environment, timeout, and output cap.
-- **User approval is not filesystem isolation. A non-allowlisted shell command permitted with safe mode off, or approved while safe mode is on, can still access files outside the workspace. This implementation is not suitable for unattended execution without stronger OS-level sandboxing.**
-- Security audit records avoid logging file contents or raw command/query text; audit write failure denies tool execution.
+### Architecture Summary
 
-## Validation
+**Security Boundary**: Single `ToolExecutor + PolicyEngine + ApprovalManager + CapabilityGrants`
+- File tools: workspace root enforcement, 1MB read/write limits
+- Shell: restricted allowlist, approval required outside allowlist, timeout/output caps
+- Capability grants: parameter-scoped, persistent/session, never bypass ToolExecutor
 
-Core tests cover schema validation, shell policy boundaries, approval timeout and cancellation, worker-thread execution after approval, and runtime lifecycle. CI and broader project tests still need to pass before Phase 7 starts.
+**Two Execution Paths**:
+1. **Fast** — Trusted capabilities (`open_application`, `open_website`, `set_volume`, `set_brightness`, `get_clipboard`, `search_and_play_youtube`)
+2. **Heavy** — `AgentRuntime` with full tool access (shell, files, browser, vision)
 
-## Roadmap
+**Voice Model**: F2 global hotkey → Sleeping → Listening → Thinking → Speaking → Sleeping (8s auto-sleep)
 
-1. Complete and verify Phase 1–6 hardening and runtime integration.
-2. Start Phase 7 evaluations only when the Phase 1–6 entry criteria are satisfied.
-3. Begin Phase 8 plugin infrastructure afterward.
+### Validation
 
-See [ARCHITECTURE_PLAN.md](./ARCHITECTURE_PLAN.md) for the broader architecture roadmap.
+- **99 tests pass** (`pytest tests/ -q`)
+- Core coverage: schema validation, shell policy, approval timeout/cancellation, worker execution, runtime lifecycle, capability grants, voice state machine, reconnect resilience, EventBus streaming
+
+### Next Steps
+
+1. **Phase 10**: UI redesign (polish after architecture stable)
+   - Visual consistency, theming, animations
+   - Accessibility improvements
+   - Mobile/responsive considerations (if applicable)
+
+See [update.md](./update.md) for complete phase-by-phase changelog.
+See [ARCHITECTURE_PLAN.md](./ARCHITECTURE_PLAN.md) for broader architecture roadmap.

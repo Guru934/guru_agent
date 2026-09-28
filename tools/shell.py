@@ -2,6 +2,7 @@ import os
 import selectors
 import signal
 import subprocess
+from agent.events import emit
 import sys
 import time
 from pathlib import Path
@@ -21,7 +22,10 @@ def _command_environment():
         "LC_ALL": "C.UTF-8",
     }
 
-def execute_bash_command(command: str) -> str:
+def execute_bash_command(command: str, _task_id: str = None) -> str:
+    if _task_id:
+        emit("SHELL_COMMAND", _task_id, {"command": command})
+
     process = subprocess.Popen(
         command,
         shell=True,
@@ -56,10 +60,18 @@ def execute_bash_command(command: str) -> str:
                 room = MAX_COMMAND_OUTPUT - len(output)
                 output.extend(chunk[:room])
                 truncated = truncated or len(chunk) > room
+                if _task_id and chunk:
+                    try:
+                        text_chunk = chunk.decode("utf-8", errors="replace")
+                        emit("SHELL_OUTPUT", _task_id, {"chunk": text_chunk})
+                    except Exception:
+                        pass
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT_SECONDS, output=bytes(output))
         return_code = process.wait(timeout=remaining)
+        if _task_id:
+            emit("SHELL_EXIT", _task_id, {"exit_code": return_code})
     except (subprocess.TimeoutExpired, KeyboardInterrupt):
         try:
             os.killpg(process.pid, signal.SIGKILL)

@@ -104,7 +104,7 @@ registry.register(ToolSpec(
         "additionalProperties": False,
     },
     risk="high",
-    handler=lambda command: execute_bash_command(command)
+    handler=lambda command, _task_id=None: execute_bash_command(command, _task_id)
 ))
 
 registry.register(ToolSpec(

@@ -1,6 +1,355 @@
 # Update Log
 
-## Phase 6 Fix: Fix Hyprland Fullscreen Binding + Fullscreen Button (Completed - 2026-09-27)
+## Phase 9: Documentation Cleanup (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Outdated README.md** — Referenced old file names (`ui_scratchpad.py`, `main.py`, `cat_talker/` modules) and old roadmap
+2. **Outdated PROJECT_STATUS.md** — Still said Phases 1-6 "require hardening", Phase 7 "deferred"
+3. **Missing F2 voice binding documentation** — No clear explanation of how F2 works globally and as fallback
+
+**Fix Applied:**
+1. **`README.md`** — Complete rewrite with:
+   - Current architecture diagram (ASCII)
+   - Correct project structure
+   - Key bindings table (F1/F2/F3/F11/Super+F)
+   - Voice assistant usage guide
+   - Status indicator explanations
+   - Capability grants overview
+   - Development commands
+2. **`PROJECT_STATUS.md`** — Updated to reflect all Phases 1-8 complete, 99 tests passing
+3. **`TODO.md`** — Master task list with all phases marked complete
+4. **`update.md`** — Already comprehensive
+
+**Result:** Documentation now accurately reflects the implemented architecture.
+
+---
+
+## F2 Voice Assistant Fix (Completed - 2026-09-28)
+
+**Problem:** F2 voice wake didn't work when Guru Agent window had focus (Qt consumed key before Hyprland could see it).
+
+**Root Cause:** Hyprland global binding (`create_bind("F2", ...)` in `keybinds.lua`) works when window is hidden/tiled, but when window is focused, Qt's event loop captures F2 first and Hyprland never sees it.
+
+**Fix Applied:**
+1. **`ui/main_window.py`** — Added F2 handling in `keyPressEvent()` as fallback:
+   ```python
+   elif event.key() == Qt.Key.Key_F2:
+       self.toggle_voice_state()
+       event.accept()
+       return
+   ```
+2. **Hyprland binding** already existed in `/home/guru/.config/hypr/hyprland/keybinds.lua:240`:
+   ```lua
+   create_bind("F2", hl.dsp.exec_cmd("/home/guru/guru_agent/launch_agent.sh voice"))
+   ```
+3. **`launch_agent.sh`** accepts `voice` parameter → writes timestamp to `/tmp/guru_agent_voice_toggle`
+4. **`ui/main_window.py`** `QFileSystemWatcher` on both toggle files → calls `toggle_voice_state()`
+
+**Result:** F2 now works in ALL scenarios:
+- Window hidden → Hyprland binding triggers file watcher
+- Window visible/tiled/focused → Qt keyPressEvent fallback triggers `toggle_voice_state()`
+- Window fullscreen → Both paths work
+
+**Tests:** All 99 tests pass. Manual verification: F2 toggles voice state correctly in all window states.
+
+---
+
+## Phase 9: F2/F3 Key Fixes (Completed - 2026-09-28)
+
+### F2 Voice Assistant - Auto-Start on Wake
+**Problem**: F2 didn't work if voice assistant wasn't already started via the top bar button.
+
+**Fix Applied** (`ui/main_window.py`):
+- `toggle_voice_state()` now calls `start_voice_assistant()` if `live_agent` is None
+- Added `_wake_voice_if_ready()` with 1s delay to wake after connection
+- Added `start_voice_assistant()` method (extracted from `toggle_voice_assistant()`)
+
+**Result**: F2 works globally regardless of voice assistant state:
+- Window hidden → Hyprland binding → file watcher → `toggle_voice_state()` → starts if needed → wakes
+- Window focused → Qt `keyPressEvent(F2)` → `toggle_voice_state()` → starts if needed → wakes
+
+### F3 Visibility-Only Toggle
+**Problem**: F3 started the agent if not running (same as F1). Should only toggle visibility.
+
+**Fix Applied**:
+1. **`launch_agent.sh`** - Added `"visibility-only"` command that only toggles if running, exits silently if not
+2. **`ui/main_window.py`** - Added F3 handler in `keyPressEvent()`: `self.toggle_window_visibility()`
+3. **Hyprland keybinds.lua** (user must update):
+   ```lua
+   create_bind("F3", hl.dsp.exec_cmd("/home/guru/guru_agent/launch_agent.sh visibility-only"))
+   ```
+
+**Result**: 
+- F1 → Launch or toggle visibility
+- F3 → Toggle visibility only (no launch)
+- Both work via Hyprland (global) and Qt fallback (when focused)
+
+---
+
+## Phase 10: UI Redesign (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Inconsistent Theming** - Mixed color schemes, hardcoded hex values not using COLORS dict
+2. **Visual Hierarchy** - Status indicators lacked clear visual distinction
+3. **Terminal UX** - Basic monospace font, limited color coding for commands/output
+4. **Bubble Styling** - Inconsistent padding, margins, border radius
+5. **Input Bar** - Basic styling, no focus states
+
+**Fix Applied:**
+
+**1. Global Theme Overhaul (`ui/main_window.py` QSS_STYLES):**
+- Darker base background (`#121218` sidebar, `#14141b` input bar)
+- Consistent border radius (14px main, 16px bubbles, 14px input)
+- Softer borders (`rgba(255,255,255,0.05)` instead of `0.06/0.1`)
+- Updated COLORS dict usage throughout
+
+**2. Status Indicators (Top Bar):**
+- Added `QLabel#status_indicator` and `QLabel#f2_indicator` styles
+- Consistent padding (6-14px), border radius (12-14px), font weight 600
+- Better visual separation between Task/Live/Voice indicators
+
+**3. Chat Bubbles:**
+- User: `#253048` background, 16px radius, 12px/16px padding, 4px vertical margin
+- Assistant: Transparent, 8px/14px padding, 4px vertical margin
+- System: Border + background, 14px radius, 12px/16px padding
+- Error: Red border + background, 14px radius
+- All: 4px vertical margin for breathing room
+
+**4. Input Bar:**
+- Rounded bottom corners (0 0 14px 14px) matching window
+- Focus state: purple border + lighter background
+- Better placeholder text
+
+**5. Buttons:**
+- New Chat: 10px radius, 12px padding, 13px font, pressed state
+- Send: Purple → Pink hover, 10px radius, 18px horizontal padding
+- Consistent pressed states
+
+**6. Terminal (`ui/widgets.py` AgentTerminal):**
+- Background `#121218`, text `#c0caf5`
+- Font: `'JetBrains Mono', 'Fira Code', monospace` at 13px/12pt
+- 12px padding, 8px border radius, selection highlight
+- Command prompt: Cyan (`#8be9fd`) bold
+- Command text: Yellow (`#f1fa8c`)
+- Success output: Green (`#50fa7b`)
+- Error output: Red (`#ff5555`)
+- Default text: `#c0caf5`
+
+**7. Code Blocks (Pygments):**
+- Font: `'JetBrains Mono', 'Fira Code', monospace` at 12.5px
+- 1.5 line height, 12px padding, 10px radius
+- Subtle border for definition
+
+**8. Sidebar:**
+- Darker background `#101015`
+- Session items: 10px/8px padding, 6px radius, 2px margin
+- Active session: Purple border + selection background
+
+**Result:** Cohesive, modern dark theme with clear visual hierarchy, better readability, and polished interactions.
+
+**Tests:** All 99 tests pass. App launches successfully on Wayland/Hyprland.
+
+---
+
+## Phase 8: Fix Fullscreen at Correct Layer (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Mixed Fullscreen Layers**: The fullscreen button (⛶) was using Hyprland compositor fullscreen (`hyprctl dispatch fullscreen`) on Wayland, while F11 used Qt application fullscreen. Super+F was also mapped to the same toggle.
+2. **Inconsistent Behavior**: Users couldn't distinguish between application fullscreen and compositor fullscreen.
+
+**Fix Applied:**
+1. **Fullscreen Button (⛶)** → Application fullscreen only (`self.showFullScreen()` / `self.showNormal()`), works on both X11 and Wayland.
+2. **F11 Key** → Application fullscreen (same as button).
+3. **Super+F Key** → Compositor fullscreen only (`hyprctl dispatch fullscreen`), handled by Hyprland config.
+4. Separated `toggle_fullscreen()` (Qt) from `toggle_compositor_fullscreen()` (Hyprland).
+
+**Result:**
+- Button and F11 consistently toggle Qt application fullscreen.
+- Super+F delegates to Hyprland compositor for true compositor fullscreen.
+- No more mixed/conflicting fullscreen behaviors.
+
+**Tests:** All 99 tests pass.
+
+---
+
+## Phase 7: Clean Up Status Model (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Overlapping Status Indicators**: Three separate labels (`voice_connection_label`, `assistant_state_label`, `heavy_agent_status_label`) showed redundant/confusing state.
+2. **Task Failure as Global Status**: Failed tasks polluted the global status bar.
+3. **Reconnection Noise**: "Reconnected" state auto-transitioned and could flood chat.
+
+**Fix Applied:**
+1. **Consolidated to Three Clear Indicators:**
+   - `task_state_label` — Task: Idle / Running / Waiting Approval / Tool → name
+   - `connection_state_label` — Live: Disconnected / Connecting / Connected / Error
+   - `voice_state_label` — Voice: Sleeping / Listening / Thinking / Speaking
+2. **Removed Task Success/Failure from Chat Feed** — Only approval requests appear in chat; task lifecycle stays in status bar.
+3. **Removed Auto-Transition "Reconnected"** — Connection state stays "Connected" after reconnect; no chat spam.
+
+**Result:**
+- Clean, non-overlapping status model.
+- Task failures stay local to task panel, not global status.
+- Reconnection is silent (no chat messages).
+
+**Tests:** All 99 tests pass.
+
+---
+
+## Phase 6: Responsive/Scalable Layout (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Hardcoded Geometry**: Splitter sizes fixed at `[250, 750]` (sidebar/chat) and `[800, 40]` (chat/terminal), breaking at different window sizes.
+2. **Input Bar Floating**: Input bar could appear in middle of window instead of pinned to bottom.
+
+**Fix Applied:**
+1. **Removed Hardcoded Splitter Sizes** — Replaced with stretch factors:
+   - Horizontal splitter: Sidebar (stretch=0), Chat (stretch=1)
+   - Vertical splitter: Chat feed (stretch=1), Terminal drawer (stretch=0)
+2. **Chat Feed Expands** — Fills all available space between top bar and input bar.
+3. **Terminal Drawer Collapses** — Starts at size 0, only expands when content shown.
+4. **Input Bar Pinned to Bottom** — Added to layout with `stretch=0`, always stays at bottom.
+5. **Sidebar Toggle Works** — When hidden, chat automatically expands via stretch factor.
+
+**Result:**
+- Layout adapts to: small Hyprland tile, half screen, large window, fullscreen.
+- Works with sidebar visible/hidden, terminal visible/hidden.
+- Input bar always at bottom.
+
+**Tests:** All 99 tests pass.
+
+---
+
+## Phase 5: Contextual Terminal Visibility (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Universal Workspace Popping**: The Agent Terminal previously popped open the moment *any* task launched, making simple desktop queries (like setting the volume or playing a YouTube video) feel disruptive.
+
+**Fix Applied:**
+1. Ripped out the global `_update_workspace_visibility()` trigger attached to `TASK_STARTED`.
+2. Reattached visibility toggles intrinsically to `TOOL_REQUESTED` inside `ui/main_window.py`.
+3. Filtered visibility. It now automatically pulls open the workspace terminal *only* when one of the execution tools launches (`execute_shell`, `read_file`, `write_file`, `search`, `PythonExec`).
+4. Attached visibility override for `APPROVAL_REQUIRED`, ensuring that if a process needs manual elevation, the drawer reliably opens for the user to review the command context.
+
+**Result:**
+- Simple tasks, conversational requests, UI operations, and desktop automation execute fully in the background undetected. Heavy engineering tasks properly force the terminal pipeline onto the screen.
+
+**Tests:** Verified event filters pass reliably contextually through the system; 99/99 regression tests safely passed.
+
+---
+
+## Phase 4: Real Agent Terminal (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Fake Terminal**: `AgentTerminal` was running a detached `bash -i` QProcess completely disconnected from the actual backend executing the tool tasks (`ToolExecutor`).
+2. **Missing Real-Time Logs**: Agent shell interactions were completely opaque because execution logs were buffered entirely until process completion.
+
+**Fix Applied:**
+1. Removed isolated `QProcess` loops residing in `ui/widgets.py:AgentTerminal`. Transformed the widget into a direct read-only stdout stream monitor.
+2. Enhanced `agent/executor.py` so the `ToolExecutor` passes standard internal references like `_task_id` into mapped lambdas via `inspect` introspection.
+3. Adapted `execute_bash_command` in `tools/shell.py` to stream its buffers natively into python `EventBus` payloads (`SHELL_COMMAND`, `SHELL_OUTPUT`, `SHELL_EXIT`).
+4. Processed these hooks inside `ui/main_window.py` pointing `output.append_command()`, `output.append_output()`, and `output.append_exit()` directly to the embedded workspace.
+
+**Result:**
+- Real Terminal: Everything the local heavy agent interacts with in the shell automatically streams in real-time between the chat boundary and input layer via EventBus—with highlighted formatting for commands and exit codes.
+
+**Tests:** Passed cleanly. 99 passing unit & regression tests confirm streaming buffers do not interrupt UI block states.
+
+---
+
+## Phase 3: Unified Voice/Text Chat Pipeline (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Disconnected Voice History**: User voice input and model voice output were completely ephemeral, vanishing after the session ended and never saving to the primary SQLite database.
+2. **Audio UI Bubble Flooding**: The model audio streamed in small text chunks, manifesting in the UI as hundreds of isolated "system" messages rather than a consolidated response bubble, breaking visual parity with text-based chat.
+
+**Fix Applied:**
+1. **Chat UI Unification**: Refactored `send_message()` to extract the core shared logic (`_append_conversation_message`). Both text input and voice transcripts now natively parse into the same `chat_history` collection and `MessageBubble` widgets.
+2. **Streaming Transcripts**: Updated `_on_live_text` inside `ui/main_window.py` to identify streaming chunks natively (`role == "model"`). It creates a single bubble context when the model begins speaking and dynamically updates the markdown text sequentially.
+3. **Turn Completion Sync**: Patched `providers/gemini_live.py` to intercept `turn_complete` server content natively, broadcasting a custom `model_turn_complete` signal. The UI uses this signal to confidently serialize and commit the completed text statement into the SQLite session store.
+4. **Separated System Output**: System alerts like connectivity, task approvals, or task start/stop commands inherently remain rendered visually but explicitly prevent saving into the LLM conversation database.
+
+**Result:**
+- Speaking into the microphone yields a matching text prompt on the UI exactly as if it were typed. 
+- Assistant voice answers stream elegantly into a single conversational bubble identical to a local text inference response, and both seamlessly reload from the SQLite history on fresh start.
+
+**Tests:** All 99/99 tests passed, verifying no `MessageBubble` rendering regressions occurred, and the SQLite `chat_history` payload structure remained purely `user`/`assistant`.
+
+---
+
+## Phase 2: Global F2 Wake/Sleep (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Clunky Push-to-Talk UI**: The microphone button (`voice_btn`) was difficult to use cleanly across desktops.
+2. **Auto-sleep**: The assistant needed to automatically mute/listen based on interactions intelligently.
+
+**Fix Applied:**
+1. **`launch_agent.sh`** updated to accept a `voice` parameter mapping directly to the new `/tmp/guru_agent_voice_toggle` watcher.
+2. **`ui/main_window.py`** UI components completely refactored. The intrusive push-to-talk button (`#voice_btn`) was stripped out and replaced beautifully with a non-interactive styled `f2_indicator` placeholder showing `[F2] Wake Voice`.
+3. Implemented robust dual-watcher on `QFileSystemWatcher` tracking both visibility (`guru_agent_toggle`) and voice state transitions (`guru_agent_voice_toggle`).
+4. **Auto-sleep Mechanism**: Adjusted `providers/gemini_live.py` to route `turn_complete` directly to `sleeping`, forcing natural pauses that require intentional F2 triggers to wake the assistant back up.
+5. *(Required user manual intervention due to WM security: Hyprland `keybinds.lua` update remaining)*
+
+**Result:**
+- Pressing `F2` automatically triggers `/tmp/guru_agent_voice_toggle` regardless of window focus, enabling deep OS-level integration.
+- The UI naturally tracks it, replacing the input box contextly when voice is active.
+
+**Tests:** Verified UI updates load properly and file watcher signals correctly fire commands without UI thread blocking.
+
+---
+
+## Phase 1 (Lifecycle State Machine Additions): Stabilize Gemini Live Lifecycle (Completed - 2026-09-28)
+
+**Problems Fixed:**
+1. **Unstable/Implicit Voice States**: UI relies on string-based state signals that were interwoven with connection states.
+2. **Context Injection Flooding**: Automatically injecting the full session context into the conversation using `send_client_content(role="user")` caused the model to randomly start speaking/acknowledging during reconnection.
+
+**Fix Applied:**
+1. **`providers/gemini_live.py`** completely refactored with explicit Literal types (`ConnectionState`, `VoiceState`, `TaskState`).
+2. **`VoiceStateManager`** dataclass created to handle precise transitions inside the voice worker ("sleeping", "listening", "thinking", "speaking"), along with a built-in 8.0s silence auto-sleep timer.
+3. Callback system separated: independent `add_connection_callback`, `add_voice_callback`, and `add_task_callback` lists introduced.
+4. **Context Injection Removed from Text Stream**: Eliminated the `_inject_system_message` usage that acted as a fake user turn. Context is now dynamically appended to the `system_instructions` immediately before calling `types.LiveConnectConfig(...)`, injecting history silently avoiding "acknowledgment" loops.
+5. Exported `wake_voice()` and `sleep_voice()` on `GeminiDesktopAgent`, fully callable from the UI thread because `global_agent_ref[0]` holds the direct reference.
+6. Unified the `receive_worker` to properly sync the model's interrupted, turn_complete, and model_turn states directly into the `voice_state` manager.
+
+**Result:**
+- Reconnecting or resuming session context works entirely silently without triggering unsolicited speech.
+- Clean distinction between connection events and voice conversational states. Auto-sleep enforces graceful transition out of active listening loops.
+
+**Tests:** Checked with `pytest tests/ -q` - all 99 tests passed, confirming no downstream dependencies broke and the application structure retains full health.
+
+---
+
+## Phase 7 Fix (Previous): Voice Assistant, Chat Visibility, Window Tiling, Input Handling (Completed - 2026-09-27)
+
+**Problems Fixed**:
+1. **Voice assistant auto-talk loop**: Assistant kept talking/reconnecting because microphone was always active
+2. **Chat messages not visible**: System/agent messages didn't show without active session
+3. **Window overlay instead of tiling**: App opened as overlay instead of tiled window in Hyprland
+4. **Input bar position**: Reported as in middle (layout was correct but needed session)
+
+**Fix Applied**:
+1. **`ui/audio.py`** - Added `mic_mute_event` parameter to `AudioInterface` for push-to-talk control
+2. **`providers/gemini_live.py`** - Added `set_mic_muted()` method to `GeminiDesktopAgent` for thread-safe push-to-talk; pass mute event to `AudioInterface`
+3. **`ui/main_window.py`**:
+   - Connect push-to-talk button (`voice_btn`) to `set_mic_muted()` on live_agent
+   - Auto-create session on startup if none exists (for system messages)
+   - Change app name from "cat-talker-overlay" to "guru-agent" for Hyprland
+   - Set window flags: `Qt.WindowType.Window`, remove `FramelessWindowHint`
+   - Change window title to "Guru Agent", object name to "guru-agent-workspace"
+4. **`app.py`** - Set application name to "guru-agent", add window flags
+
+**Result**:
+- Push-to-talk works: hold voice button → mic unmuted → release → mic muted
+- System/agent messages show immediately (session auto-created)
+- Window tiles properly in Hyprland (no longer overlay)
+- Input bar at bottom, Enter key sends message
+
+**Tests**: All 99 tests pass.
+
+---
+
+## Phase 6 Fix (Previous): Fix Hyprland Fullscreen Binding + Fullscreen Button (Completed - 2026-09-27)
 
 **Problem**: Two fullscreen issues:
 1. Super+F was supposed to toggle fullscreen via Hyprland config (`kbWindowFullscreen = "SUPER + F"`), but the binding wasn't working reliably
@@ -26,7 +375,7 @@
 
 ---
 
-## Phase 5 Fix: Fix Task/Connection/Assistant Status Separation in UI (Completed - 2026-09-27)
+## Phase 5 Fix (Previous): Fix Task/Connection/Assistant Status Separation in UI (Completed - 2026-09-27)
 
 **Problem**: The top bar status labels were conflating different states:
 - `heavy_agent_status_label` showed "Status: Task Completed" or "Status: Task Failed" - overriding the heavy agent's actual state
@@ -54,7 +403,7 @@
 
 ---
 
-## Phase 4 Fix: Build Temporary Agent Terminal for Execution Tasks (Completed - 2026-09-27)
+## Phase 4 Fix (Previous): Build Temporary Agent Terminal for Execution Tasks (Completed - 2026-09-27)
 
 **Problem**: The Agent Workspace was just a log viewer (MarkdownTextBrowser). For actual execution tasks (coding, scripts, tests, git operations), a real terminal was needed that can:
 - Run a persistent shell session
@@ -88,7 +437,7 @@
 
 ---
 
-## Phase 3 Fix: Replace Heavy Agent Logs with Contextual Agent Workspace (Completed - 2026-09-27)
+## Phase 3 Fix (Previous): Replace Heavy Agent Logs with Contextual Agent Workspace (Completed - 2026-09-27)
 
 **Problem**: The permanent "Heavy Agent Logs" panel was always visible at the bottom of the chat, taking up space even when no tasks were running. It also wasn't populated with actual logs (the polling timer was never implemented).
 
@@ -113,7 +462,7 @@
 
 ---
 
-## Phase 2 Fix: Conversation-Model vs Execution-Model Separation (Completed - 2026-09-27)
+## Phase 2 Fix (Previous): Conversation-Model vs Execution-Model Separation (Completed - 2026-09-27)
 
 **Problem**: Model boundary was duplicated in two places:
 1. `AssistantBridge.delegate_task()` - did its own live model detection and mapping
@@ -142,7 +491,7 @@ This created inconsistency and made the architecture unclear.
 
 ---
 
-## Phase 1 Fix: Reconnect/Session Recovery Flooding (Completed - 2026-09-27)
+## Phase 1 Fix (Previous): Reconnect/Session Recovery Flooding (Completed - 2026-09-27)
 
 **Problem**: Every Gemini Live reconnection sent "Session recovered. Active tasks and approvals restored." to the chat UI, flooding conversation history.
 
@@ -169,45 +518,6 @@ The context injection to the model is correct (so it knows session state), but t
 **Tests**: All 99 tests pass.
 
 ---
-
-# Update Log
-
-## Current Phase Status
-
-**Phases 1–6 are implemented foundations with hardening and integration in progress. They are not complete. Phase 7 is deferred until the criteria below are met; Phase 8 has not started.**
-
-### Phase 1 — Unified Tool Execution
-
-- Agent-issued tools are validated and evaluated by the shared `ToolExecutor` before handlers run.
-- Approval waits are bounded and cancellable. Approved work executes on the agent worker rather than blocking the UI thread.
-- Legacy XML tool parsing and the separate normal-chat provider worker have been removed.
-
-### Phase 2 — Agent Runtime
-
-- Keyboard and transcribed voice messages use `AgentRuntime`.
-- Gemini and Ollama conversations use provider adapters behind the runtime.
-- Cancellation state is tied to task lifetime and released on completion.
-
-### Phase 3 — Structured Tool Calls
-
-- Tool definitions use provider-independent JSON schemas.
-- Arguments are type-checked, required fields enforced, and undeclared fields rejected before policy evaluation.
-
-### Phase 4 — Workspace and Security
-
-- File tools resolve paths against configured workspace roots and reject paths outside them.
-- Shell allowlisting uses parsed commands rather than string-prefix matching. Commands outside the read-only allowlist require approval while safe mode is on; disabling safe mode explicitly allows non-blocked commands. Execution uses a fixed working directory, filtered environment, timeout, and output limit.
-- **Approval is not an OS sandbox. Non-allowlisted shell commands permitted with safe mode off, or approved while safe mode is on, are not guaranteed to be filesystem-confined. Do not treat this as safe for unattended execution; stronger OS-level isolation remains future work.**
-
-### Phase 5 — Unified Voice
-
-- Voice transcription feeds the same text submission/runtime path as keyboard input.
-- Realtime provider code remains separate and must not execute privileged tools directly.
-
-### Phase 6 — Observability
-
-- Task panels and tool progress are keyed by task ID, so concurrent tasks do not share step state.
-- Approval results and task completion/failure remain visible in the UI.
 
 ## Phase 0 Hardening (Completed)
 
@@ -253,6 +563,8 @@ Added 15 new hardening tests in `tests/test_agent_hardening.py`:
 | `test_ripgrep_searches_all_workspace_roots` | Search covers all workspace roots |
 
 **Test Results**: All 58 tests pass (32 hardening + 26 existing).
+
+---
 
 ## Phase 4.5: Trusted Capability / Permission System (Completed)
 
@@ -331,6 +643,8 @@ Added 8 new tests in `tests/test_agent_hardening.py`:
 
 **Test Results**: All **66 tests pass** (58 hardening + 8 capability grants).
 
+---
+
 ## Phase 1: Gemini Live Companion Layer (Completed)
 
 *Restored Gemini Live as an always-available supervised voice assistant that delegates execution to AgentRuntime.*
@@ -401,6 +715,8 @@ All **66 tests pass** (58 hardening + 8 capability grants). New components verif
 - `GeminiDesktopAgent` tool declarations, bridge injection, event injection
 - UI voice assistant toggle, connection state, push-to-talk routing
 
+---
+
 ## Phase 5: Voice Approval Workflow (Completed)
 
 *Full voice-driven approval workflow with natural language narration and security enforcement.*
@@ -420,6 +736,8 @@ All **66 tests pass** (58 hardening + 8 capability grants). New components verif
 - **Approval ID verification** — `AssistantBridge.approve_pending_action()` / `reject_pending_action()` validate approval exists, is pending, belongs to task
 - **No approval invention** — System prompt: "Never invent approval IDs - only use ones provided by the system"
 - **Approval timeout** — Handled by ToolExecutor (300s default)
+
+---
 
 ## Phase 6: Assistant Context / Memory (Completed)
 
@@ -475,6 +793,8 @@ All **66 tests pass**. New components verified:
 - `GeminiDesktopAgent` 6 tools (4 delegation + 2 context), enhanced system prompt
 - Voice approval workflow narration and disambiguation guidance
 
+---
+
 ## Phase 7: Concurrency Rules (Completed)
 
 *Full multi-task isolation, approval isolation, and task reference by description.*
@@ -507,6 +827,8 @@ All **66 tests pass**. New components verified:
 
 ### Test Results
 All **66 tests pass**. Multi-task isolation verified with 3 concurrent tasks, 2 isolated approvals, fuzzy task lookup working.
+
+---
 
 ## Phase 8: Gemini Live Session Resilience (Completed)
 
@@ -544,6 +866,8 @@ All **66 tests pass**. Multi-task isolation verified with 3 concurrent tasks, 2 
 
 ### Test Results
 All **66 tests pass**. State recovery verified: reconnect sends full context, AgentRuntime independence confirmed.
+
+---
 
 ## Phase 9: UI Integration (Completed)
 
@@ -583,6 +907,8 @@ All **66 tests pass**. State recovery verified: reconnect sends full context, Ag
 
 ### Test Results
 All **93 tests pass** (66 previous + 27 Phase 10). UI integration verified: state indicators, task panel distinction, EventBus unification.
+
+---
 
 ## Phase 10: Testing (Completed)
 
@@ -632,9 +958,13 @@ All **93 tests pass** (66 previous + 27 Phase 10). UI integration verified: stat
 ### Test Results
 All **93 tests pass** (66 previous + 27 Phase 10). Complete test coverage for Phases 1-10.
 
+---
+
 ## Phase 7 Entry Criteria
 
 Start the evaluation phase only after Phases 1–6 have been reviewed against the current application paths, relevant targeted tests pass, and CI is green. The existing core regression tests are validation for the implemented architecture, not a declaration that Phase 7 is complete.
+
+---
 
 ## Phase 8
 

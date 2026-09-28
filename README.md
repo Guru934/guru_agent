@@ -1,120 +1,167 @@
 # Guru Agent
 
-A local-first personal desktop AI assistant that blends:
+A local-first personal desktop AI assistant for Linux (Hyprland/Wayland) that blends:
 
-- Ollama-powered local reasoning
-- Gemini cloud fallback for vision and research tasks
-- desktop actions for browsing, launching apps, and handling files
-- a chat workspace with session memory and approval-aware agent actions
+- **Gemini Live** — Real-time voice conversation with streaming audio
+- **AgentRuntime** — Heavy execution agent for complex multi-step tasks (coding, file ops, shell, git)
+- **Fast Desktop Actions** — Trusted capabilities: open app/website, volume/brightness, YouTube search
+- **Session Memory** — SQLite-backed chat history with voice/text unified pipeline
+- **Approval System** — Human-in-the-loop for sensitive actions with capability grants
 
-The goal is to create a practical, privacy-aware assistant that can help with day-to-day desktop work without forcing everything through a cloud service.
+## Architecture
 
-## What this project is trying to become
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        USER (F2 Voice / Text)                   │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  ScratchpadWindow (Qt)                                          │
+│  ┌─────────────┬─────────────────────────────────────────────┐  │
+│  │  Sidebar    │  Chat Area                                  │  │
+│  │  Sessions   │  ┌───────────────────────────────────────┐  │  │
+│  │  Trust&Safe │  │ Chat Feed (user/assistant bubbles)    │  │  │
+│  │             │  ├───────────────────────────────────────┤  │  │
+│  │             │  │ Agent Terminal (EventBus streaming)   │  │  │
+│  │             │  │ • SHELL_COMMAND/OUTPUT/EXIT events    │  │  │
+│  │             │  │ • Auto-shows for execution tools      │  │  │
+│  │             │  ├───────────────────────────────────────┤  │  │
+│  │             │  │ Input Bar [F2] Wake Voice | 📸 | 🪟 | ➤ │  │  │
+│  │             │  └───────────────────────────────────────┘  │  │
+│  └─────────────┴─────────────────────────────────────────────┘  │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Gemini Live (Conversation Model)                               │
+│  • Voice: Sleeping → Listening → Thinking → Speaking → Sleeping │
+│  • Delegation tools: delegate_to_agent, get_agent_status,       │
+│    approve_pending_action, reject_pending_action,               │
+│    get_project_context, get_task_history, find_task_by_description │
+│  • Context injected via system_instructions (no user turns)     │
+│  • Auto-reconnect with exponential backoff                      │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  AssistantBridge (Coordination Layer)                           │
+│  • Task delegation → AgentRuntime (background thread)           │
+│  • EventBus → AssistantEvent → Gemini Live + UI                 │
+│  • Approval tracking, capability grants, project context        │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  AgentRuntime (Execution Model)                                 │
+│  • ToolExecutor + PolicyEngine + ApprovalManager                │
+│  • Desktop tools (6 granular), Shell, Files, Browser, Vision    │
+│  • Real-time EventBus streaming to Agent Terminal               │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-This app is designed as a personal AI workspace with a human-in-the-loop pattern:
+## Quick Start
 
-1. Quick local tasks stay fast and simple.
-2. Riskier actions require approval before they run.
-3. Voice and visual input are treated as first-class inputs.
-4. The assistant can reason locally, inspect the screen, and route deeper work through a tool or agent layer.
+```bash
+# 1. Install dependencies
+python -m pip install -r requirements.txt
 
-In plain terms, we want a desktop assistant that can:
+# 2. Start Ollama and pull a model (for heavy execution)
+ollama pull qwen2.5-coder
 
-- answer local questions using Ollama
-- use Gemini when a stronger vision or cloud-backed answer is needed
-- open websites, apps, files, and system controls with approval where appropriate
-- listen through a mic and understand what the user says
-- inspect the screen and describe what is visible
-- follow a workflow that is transparent and safe
+# 3. Configure environment
+cp .env.example .env
+# Edit .env: set GEMINI_API_KEY, HEAVY_AGENT_MODEL=qwen2.5-coder
 
-## Current direction
+# 4. Run
+python app.py
+```
 
-We are building the assistant in layers:
+## Key Bindings (Hyprland)
 
-- chat and session UI
-- orchestration layer for deciding route vs local tool vs agent work
-- assistant features for voice, screen, and desktop automation
-- approval-based action safety
+| Key | Action |
+|-----|--------|
+| **F1** | Toggle window visibility |
+| **F2** | Wake voice assistant (global, works when hidden) |
+| **F3** | Toggle window visibility |
+| **F11** | Application fullscreen (Qt) |
+| **Super+F** | Compositor fullscreen (Hyprland) |
 
-The current milestone is to make the interface feel like a real personal assistant rather than a text-only demo.
+## Voice Assistant Usage
 
-## Quick start
+1. **Start**: Press **F2** (global hotkey, works when window hidden/tiled/fullscreen)
+2. **Speak**: Assistant listens (🔴 Listening indicator)
+3. **Auto-sleep**: After 8s silence or when response completes
+4. **Next command**: Press **F2** again
 
-1. Install Python dependencies:
-   ```bash
-   python -m pip install -r requirements.txt
-   ```
-2. Start Ollama locally and pull a model, for example:
-   ```bash
-   ollama pull qwen2.5-coder
-   ```
-3. Copy `.env.example` to `.env` and set your Gemini API key if you want image analysis and cloud fallback enabled.
-4. Run the app:
-   ```bash
-   python main.py
-   ```
+No push-to-talk button — F2 is a global background hotkey via `/tmp/guru_agent_voice_toggle` file watcher.
 
-## Local model note
+## Project Structure
 
-The app prefers local Ollama models when available. Gemini is used for cloud fallback and image-based analysis when `GEMINI_API_KEY` is configured.
+```
+guru_agent/
+├── app.py                    # Entry point, QApplication setup
+├── launch_agent.sh           # F1/F3 visibility + F2 voice toggle launcher
+├── requirements.txt
+├── .env                      # GEMINI_API_KEY, HEAVY_AGENT_MODEL
+├── update.md                 # Complete phase-by-phase changelog
+├── TODO.md                   # Master task list
+├── ui/
+│   ├── main_window.py        # ScratchpadWindow (main UI)
+│   ├── widgets.py            # AgentTerminal, MessageBubble, Visualizers
+│   ├── audio.py              # AudioInterface (mic mute event for push-to-talk)
+│   └── approval_dialog.py    # Approval UI with "Always allow" grants
+├── providers/
+│   └── gemini_live.py        # Gemini Live API, VoiceStateManager, state machines
+├── agent/
+│   ├── runtime.py            # AgentRuntime (execution model)
+│   ├── executor.py           # ToolExecutor + PolicyEngine + ApprovalManager
+│   ├── assistant_bridge.py   # Coordination layer (delegation, context, approvals)
+│   ├── assistant_events.py   # AssistantEvent dataclass
+│   ├── capabilities.py       # CapabilityRegistry, CapabilityGrant
+│   ├── policy.py             # PolicyEngine with capability grant integration
+│   ├── approvals.py          # ApprovalManager (timeout, cancellable)
+│   └── tool_registry.py      # Tool definitions with strict schemas
+├── tools/
+│   ├── desktop.py            # 6 granular desktop capabilities
+│   ├── shell.py              # execute_bash_command with EventBus streaming
+│   ├── filesystem.py         # File ops with workspace limits
+│   └── vision.py             # Screen/window capture
+└── memory/
+    └── sqlite.py             # Sessions, messages, capability grants
+```
 
-## Project structure
+## Status Indicators (Top Bar)
 
-- `main.py` launches the desktop app
-- `ui_scratchpad.py` contains the main UI and chat flow
-- `db.py` stores sessions and messages in SQLite
-- `cat_talker/orchestrator.py` decides whether a request should be local, desktop-driven, or delegated
-- `cat_talker/llm_router.py` handles model routing and streaming
-- `cat_talker/desktop_actions.py` contains direct desktop actions like open app, website, volume, brightness
-- `cat_talker/assistant_features.py` covers voice input, screen capture, and image analysis
-- `cat_talker/agentic_tools.py` handles file read/search/write and pending approval actions
+- **● Task**: Idle / Running / Waiting Approval / Tool → name
+- **● Live**: Disconnected / Connecting / Connected / Error
+- **● Voice**: Sleeping / Listening / Thinking / Speaking
+
+## Capability Grants (Trust & Safety Panel)
+
+Parameter-scoped grants created via "Always allow" in approval dialog:
+- `open_application` → `app_name="chrome"` only
+- `set_volume` → `level_percent` range 0-100
+- Persistent (survives restart) or session-scoped with expiry
+
+## Development
+
+```bash
+# Run tests (99 passing)
+python -m pytest tests/ -q
+
+# Format code
+ruff format .
+
+# Type check
+ruff check .
+```
 
 ## Roadmap
 
-### Phase 1: working local desktop assistant
-
-- [x] app starts and loads a chat UI
-- [x] local Ollama routing works
-- [x] Gemini fallback and API key flow exists
-- [x] desktop action routing is in place
-- [x] basic approval flow exists
-
-### Phase 2: richer assistant behaviors
-
-- [x] push-to-talk-style voice capture flow
-- [x] screen snapshot and screen description workflow
-- [x] approval modal for direct actions
-- [ ] smoother hold-to-talk mic UX with live recording state
-- [ ] stronger active-window capture and analysis mode
-- [ ] more polished desktop automation actions
-
-### Phase 3: personal productivity focus
-
-- [ ] active-window target selection
-- [ ] region-based screenshot inspection
-- [ ] smarter agent actions with safer approval UX
-- [ ] better workflow for reading docs, code, and file context
-- [ ] more advanced voice + screen assistant loops
-
-## Todo list
-
-- [x] basic app startup and model routing
-- [x] direct action execution pipeline
-- [x] assistant + agent handoff flow
-- [x] voice input and screen analysis integration
-- [ ] live recording indicator for mic input
-- [ ] stronger active-window screen analysis mode
-- [ ] action confirmation polish for multi-step workflows
-- [ ] expand desktop automation coverage
-- [ ] improve local-first reliability and fallback messaging
-
-## Notes
-
-This project is intentionally designed to be local-first and transparent. The assistant should feel like a helper that is present on the desktop, not a mysterious backend-only chatbot.
-
-The next upgrades are aimed at making it feel like a real personal assistant:
-
-- hold-to-talk voice interaction
-- focused active-window analysis
-- better approval UX before sensitive actions
-- more useful desktop command understanding
+- [x] Phase 1: Stabilize Gemini Live lifecycle (state machines, auto-sleep, silent reconnect)
+- [x] Phase 2: F2 global wake/sleep (replaced push-to-talk)
+- [x] Phase 3: Unified voice/text chat pipeline (single SQLite conversation)
+- [x] Phase 4: Real Agent Terminal (EventBus streaming from ToolExecutor)
+- [x] Phase 5: Contextual terminal visibility (auto-show for execution tools only)
+- [x] Phase 6: Responsive layout (stretch factors, no hardcoded geometry)
+- [x] Phase 7: Clean status model (3 independent indicators)
+- [x] Phase 8: Fullscreen layers (F11=Qt, Super+F=Hyprland)
+- [x] Phase 9: Documentation cleanup (this README, PROJECT_STATUS, update.md)
+- [ ] Phase 10: UI redesign (polish after architecture stable)

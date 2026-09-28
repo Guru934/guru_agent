@@ -62,16 +62,17 @@ class AssistantFeaturesTests(unittest.TestCase):
     def test_voice_button_state_machine_updates_readably(self):
         app = QApplication.instance() or QApplication([])
         window = ScratchpadWindow()
-        window.set_voice_button_state("recording")
-        self.assertEqual(window.voice_btn.text(), "🔴 Recording")
-        self.assertTrue(window.voice_btn.isChecked())
+        window.set_voice_button_state("listening")
+        self.assertEqual(window.f2_indicator.text(), "🔴 Listening...")
 
-        window.set_voice_button_state("processing")
-        self.assertIn("Processing", window.voice_btn.text())
+        window.set_voice_button_state("thinking")
+        self.assertIn("Thinking", window.f2_indicator.text())
 
-        window.set_voice_button_state("idle")
-        self.assertEqual(window.voice_btn.text(), "🎙")
-        self.assertFalse(window.voice_btn.isChecked())
+        window.set_voice_button_state("speaking")
+        self.assertIn("Speaking", window.f2_indicator.text())
+
+        window.set_voice_button_state("sleeping")
+        self.assertEqual(window.f2_indicator.text(), "[F2] Wake Voice")
 
         window.close()
         app.processEvents()

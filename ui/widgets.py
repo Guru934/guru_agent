@@ -357,129 +357,68 @@ class MarkdownTextBrowser(QTextBrowser):
 
 
 class AgentTerminal(QPlainTextEdit):
-    """A terminal widget for agent execution tasks.
+    """A terminal widget for tracking agent execution tasks.
     
-    Runs a persistent bash shell via QProcess, shows output in real-time,
-    accepts input, and can be controlled programmatically by the agent.
+    Displays output straight from ToolExecutor without spawning its own shell.
     """
-    
-    output_received = pyqtSignal(str)
-    command_finished = pyqtSignal(int)
-    prompt_ready = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setReadOnly(False)
+        self.setReadOnly(True)
         self.setStyleSheet("""
             QPlainTextEdit {
-                background-color: #1a1b26;
-                color: #a6adc8;
-                font-family: 'Monospace', 'DejaVu Sans Mono', monospace;
-                font-size: 12px;
-                padding: 8px;
+                background-color: #121218;
+                color: #c0caf5;
+                font-family: 'JetBrains Mono', 'Fira Code', 'Monospace', monospace;
+                font-size: 13px;
+                padding: 12px;
                 border: none;
+                border-radius: 8px;
+                selection-background-color: #3d59a1;
             }
         """)
         
         # Font
-        font = QFont("Monospace", 11)
+        font = QFont("JetBrains Mono", 12)
         font.setStyleHint(QFont.StyleHint.Monospace)
         self.setFont(font)
         
-        # Process
-        self._process = QProcess(self)
-        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self._process.readyReadStandardOutput.connect(self._on_output)
-        self._process.finished.connect(self._on_finished)
-        self._process.errorOccurred.connect(self._on_error)
+    def append_output(self, text: str):
+        self.moveCursor(QTextCursor.MoveOperation.End)
+        self.insertPlainText(text)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
         
-        # State
-        self._pending_input = ""
-        self._at_prompt = False
-        self._command_buffer = ""
-        self._shell_started = False
+    def append_command(self, cmd: str):
+        self.moveCursor(QTextCursor.MoveOperation.End)
+        # Bold cyan prompt, yellow command
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#8be9fd"))
+        fmt.setFontWeight(QFont.Weight.Bold)
+        self.textCursor().insertText(f"\nguru-agent@workspace$ ", fmt)
         
-        # Start shell
-        self._start_shell()
+        fmt.setForeground(QColor("#f1fa8c"))
+        fmt.setFontWeight(QFont.Weight.Normal)
+        self.textCursor().insertText(f"{cmd}\n", fmt)
         
-        # Connect input
-        self.textChanged.connect(self._on_text_changed)
+        # reset
+        fmt.setForeground(QColor("#c0caf5"))
+        self.textCursor().setCharFormat(fmt)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
         
-    def _start_shell(self):
-        """Start a persistent bash shell."""
-        self._process.start("bash", ["-i"])  # Interactive mode
-        if not self._process.waitForStarted(3000):
-            self.appendPlainText("[Error] Failed to start shell")
-            return
-            
-    def _on_output(self):
-        """Handle output from shell."""
-        data = self._process.readAllStandardOutput()
-        text = bytes(data).decode("utf-8", errors="replace")
+    def append_exit(self, code: int):
+        self.moveCursor(QTextCursor.MoveOperation.End)
+        fmt = QTextCharFormat()
+        if code == 0:
+            fmt.setForeground(QColor("#50fa7b"))
+            self.textCursor().insertText(f"[Process exited successfully]\n\n", fmt)
+        else:
+            fmt.setForeground(QColor("#ff5555"))
+            self.textCursor().insertText(f"[Process exited with code {code}]\n\n", fmt)
         
-        # Move cursor to end and insert
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(text)
-        self.setTextCursor(cursor)
-        self.ensureCursorVisible()
-        
-        self.output_received.emit(text)
-        
-        # Check for prompt (only once after initial start)
-        if not self._shell_started and (text.strip().endswith("$") or text.strip().endswith("#") or text.strip().endswith("> ")):
-            self._shell_started = True
-            self._at_prompt = True
-            self.prompt_ready.emit()
-            
-    def _on_finished(self, exit_code, exit_status):
-        """Handle shell exit."""
-        self.appendPlainText(f"\n[Shell exited with code {exit_code}]")
-        self.command_finished.emit(exit_code)
-        
-    def _on_error(self, error):
-        """Handle process error."""
-        error_msg = self._process.errorString()
-        self.appendPlainText(f"\n[Process error: {error_msg}]")
-        
-    def _on_text_changed(self):
-        """Handle user input."""
-        # This is a simple approach - in practice you'd want more sophisticated input handling
-        pass
-        
-    def send_command(self, command: str):
-        """Send a command to the shell programmatically."""
-        if self._process.state() != QProcess.ProcessState.Running:
-            self.appendPlainText("[Error] Shell not running")
-            return
-            
-        # Write command + newline
-        self._process.write((command + "\n").encode("utf-8"))
-        self._command_buffer = command
-        
-    def send_text(self, text: str):
-        """Send raw text to the shell."""
-        if self._process.state() == QProcess.ProcessState.Running:
-            self._process.write(text.encode("utf-8"))
-            
-    def send_ctrl_c(self):
-        """Send Ctrl+C to interrupt current command."""
-        if self._process.state() == QProcess.ProcessState.Running:
-            # Send SIGINT to the process group
-            import os
-            import signal
-            try:
-                os.killpg(os.getpgid(self._process.processId()), signal.SIGINT)
-            except Exception:
-                pass
-            
-    def closeEvent(self, event):
-        """Clean up on close."""
-        if self._process.state() == QProcess.ProcessState.Running:
-            self._process.terminate()
-            self._process.waitForFinished(1000)
-        super().closeEvent(event)
-
+        # reset
+        fmt.setForeground(QColor("#c0caf5"))
+        self.textCursor().setCharFormat(fmt)
+        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
 
 class MessageBubble(QWidget):
     def __init__(self, role: str, content: str, is_error: bool = False, parent=None):
