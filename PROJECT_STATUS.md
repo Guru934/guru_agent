@@ -121,6 +121,20 @@ M0 is complete only when:
   (16 subtests passed). The only warning is the installed `google-genai`
   deprecation warning.
 
+## M4 — Verifier: COMPLETE
+
+- Added deterministic Python, Node, and Rust command detection and structured
+  command/attempt/verdict results. Verification executes through ToolExecutor
+  and PolicyEngine in the selected or explicitly provided repository.
+- Failed command sets are retried exactly once. Both attempts, exit status,
+  output truncation, timeout, and error details are retained in the Verdict.
+- Focused M4 verification: **17 passed, 1 skipped** (5 subtests passed). The
+  Rust execution test skipped because cargo and cargo-clippy are unavailable;
+  Rust command detection is covered with tool-availability fixtures.
+- Latest full verification: `QT_QPA_PLATFORM=offscreen python -m pytest -q` —
+  **162 passed, 3 skipped** (21 subtests passed). The only warning is the
+  installed `google-genai` deprecation warning.
+
 ## Current Architecture
 
 ```text
@@ -141,11 +155,12 @@ Approval / Capability
 Registered tools
 ```
 
-The full coding-agent loop and dedicated verifier shown in `ROADMAP.md` are
-planned work, not current implementation.
+The full coding-agent loop shown in `ROADMAP.md` remains planned work. The
+deterministic repository verifier is implemented; coding actions are not
+automatically reflected or retried by it.
 
 ## Next Milestone
 
-**M4 — Verifier**
+**M5 — CodingAgentLoop**
 
 Status: NOT STARTED

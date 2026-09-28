@@ -211,8 +211,9 @@ Before editing, identify:
 
 ## Current Work
 
-M0 — Stabilize and M1 — Repo Awareness are complete. M2 — Coding Tools is the
-next milestone and is not started. Do not begin M2 unless explicitly requested.
+M0 — Stabilize, M1 — Repo Awareness, M2 — Coding Tools, M3 — Vertical Slice,
+and M4 — Verifier are complete. M5 — CodingAgentLoop is next and is not
+started. Do not begin M5 unless explicitly requested.
 
 Follow `PROJECT_STATUS.md` for current milestone state and `ROADMAP.md` for
 milestone scope and acceptance criteria.
