@@ -372,9 +372,6 @@ class GeminiDesktopAgent:
                         if not is_reconnect:
                             if text_callback:
                                 text_callback("system", "Gemini Live Connected!")
-                            # Send greeting on first connect
-                            if text_callback:
-                                text_callback("model", "Hello Guru, what would you like to do today?")
                             self._has_connected_once = True
                         # Only set voice state to sleeping if not already in an active state
                         # (e.g., if wake_voice() was called before connection completed)
@@ -386,9 +383,25 @@ class GeminiDesktopAgent:
                         # Reset reconnect attempts on successful connection
                         self._reconnect_attempts = 0
 
-                        # On reconnect: send a silent notification (no greeting)
-                        if is_reconnect and text_callback:
-                            text_callback("system", "Reconnected.")
+                        # On reconnect: silent - no greeting, no chat message
+                        # Connection state update is handled by _set_connection_state
+
+                        # On first connect: trigger spoken greeting by sending user turn
+                        if not is_reconnect:
+                            async def send_greeting():
+                                await asyncio.sleep(0.5)  # Brief delay for session to stabilize
+                                try:
+                                    async with send_lock:
+                                        await session.send_client_content(
+                                            turns=types.Content(
+                                                role="user",
+                                                parts=[types.Part(text="Hello")],
+                                            ),
+                                            turn_complete=True,
+                                        )
+                                except Exception as e:
+                                    logger.error(f"Failed to send greeting: {e}")
+                            asyncio.create_task(send_greeting())
 
 
                         send_lock = asyncio.Lock()
@@ -521,10 +534,10 @@ class GeminiDesktopAgent:
                         if self.current_model != new_model:
                             self.current_model = new_model
                             logger.info(f"Auto-switching Live backend to fallback model: {self.current_model}")
-                            if bubble_callback: bubble_callback(f"Quota exceeded! Auto-switching to {self.current_model}...")
+                            # Don't send to chat - only update connection state
+                    
                     play_earcon("fail")
-                    if text_callback:
-                        text_callback("system", f"Reconnecting... ({e})")
+                    # Silent reconnect - NO chat messages, only connection state update
                     
                     # Exponential backoff with jitter
                     self._reconnect_attempts += 1
@@ -534,6 +547,14 @@ class GeminiDesktopAgent:
                     delay = base_delay + jitter
                     logger.info(f"Reconnecting in {delay:.1f}s (attempt {self._reconnect_attempts})...")
                     await asyncio.sleep(delay)
+                    
+                    # Add retry ceiling - after 10 failed attempts, stop auto-reconnecting
+                    if self._reconnect_attempts >= 10:
+                        logger.warning("Max reconnect attempts reached, stopping auto-reconnect")
+                        self._set_connection_state("error")
+                        if text_callback:
+                            text_callback("system", "Connection failed after multiple attempts. Please check your connection and restart voice assistant.")
+                        break
                     
                     # Reset reconnect attempts on successful connection (handled in the while loop restart)
 

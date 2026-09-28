@@ -1209,10 +1209,10 @@ class ScratchpadWindow(QMainWindow):
             print("Warning: Attempted to add system message with no active session.")
             return
 
-        self.chat_history.append({"role": "system", "content": system_msg})
-        insert_message(self.current_session_id, "system", system_msg)
+        # System messages are UI-only, NOT persisted to conversation DB
+        # Only user/assistant messages go to SQLite conversation DB
         system_bubble = MessageBubble("system", system_msg, is_error=is_error)
-        self.chat_feed_layout.addWidget( system_bubble)
+        self.chat_feed_layout.addWidget(system_bubble)
         QTimer.singleShot(10, lambda: self.chat_feed_scroll_area.verticalScrollBar().setValue(self.chat_feed_scroll_area.verticalScrollBar().maximum()))
 
     def on_safe_mode_changed(self, state):
@@ -1266,7 +1266,8 @@ class ScratchpadWindow(QMainWindow):
             print(f"[Toggle] Error reading toggle file: {e}", flush=True)
 
     def toggle_voice_state(self):
-        """Toggles voice awakening manually. Auto-starts voice assistant if not running."""
+        """Wake voice assistant (F2). Auto-starts voice assistant if not running.
+        F2 is a WAKE key, not a toggle - it only wakes, never puts to sleep."""
         if not self.live_agent:
             # Voice assistant not running, start it first
             self.start_voice_assistant()
@@ -1274,12 +1275,11 @@ class ScratchpadWindow(QMainWindow):
             QTimer.singleShot(1000, lambda: self._wake_voice_if_ready())
             return
         
+        # F2 = WAKE only, never sleep
         if getattr(self.live_agent.voice_state, 'state', None) == "sleeping":
             self.live_agent.wake_voice()
             self.set_voice_button_state("listening")
-        else:
-            self.live_agent.sleep_voice()
-            self.set_voice_button_state("idle")
+        # If already listening/thinking/speaking, do nothing (F2 is wake only)
 
     def _wake_voice_if_ready(self):
         """Wake voice after assistant has started."""
@@ -1302,8 +1302,9 @@ class ScratchpadWindow(QMainWindow):
         self.voice_assistant_btn.setText("🛑 Stop Voice Assistant")
         self.connection_state_label.setText("● Live: Connecting...")
         self.connection_state_label.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px; margin-left: 5px;")
-        self.voice_state_label.setText("● Voice: Sleeping")
-        self.voice_state_label.setStyleSheet("color: #6272a4; font-weight: bold; font-size: 11px; margin-left: 10px;")
+        # Voice state will be updated via _on_live_voice_state callback when greeting is spoken
+        self.voice_state_label.setText("● Voice: Connecting...")
+        self.voice_state_label.setStyleSheet("color: #ffb86c; font-weight: bold; font-size: 11px; margin-left: 10px;")
 
         global_agent_ref = [None]
 
@@ -1347,8 +1348,7 @@ class ScratchpadWindow(QMainWindow):
         if event.type == "LOG":
             msg = event.payload.get("msg", "")
             self.task_state_label.setText(f"● Task: {msg[:50]}...")
-            # Also append to terminal workspace
-            self._append_to_workspace(msg)
+            # LOG events only update status label, not terminal (terminal is for shell output only)
             return
 
         task_id = event.task_id
@@ -1383,6 +1383,8 @@ class ScratchpadWindow(QMainWindow):
                     if not self.terminal_text_area.isVisible():
                         self.terminal_text_area.setVisible(True)
                         self.terminal_toggle_btn.setText("▼ Agent Workspace")
+                        # Allocate space for terminal in splitter
+                        self.chat_splitter.setSizes([1, 200])
                 steps.append({"name": tool_name, "status": "running"})
                 self.task_state_label.setText(f"● Task: Tool -> {tool_name}")
             elif event.type == "TOOL_FINISHED":
@@ -1395,6 +1397,8 @@ class ScratchpadWindow(QMainWindow):
                 if not self.terminal_text_area.isVisible():
                     self.terminal_text_area.setVisible(True)
                     self.terminal_toggle_btn.setText("▼ Agent Workspace")
+                    # Allocate space for terminal in splitter
+                    self.chat_splitter.setSizes([1, 200])
                 for step in reversed(steps):
                     if step["name"] == tool_name and step["status"] == "running":
                         step["status"] = "pending_approval"
@@ -1474,6 +1478,11 @@ class ScratchpadWindow(QMainWindow):
             # Update heavy agent status: Idle if no more tasks, else still executing
             if self._active_task_count == 0:
                 self.task_state_label.setText("● Task: Idle")
+                # Collapse terminal when no more active tasks
+                if self.terminal_text_area.isVisible():
+                    self.terminal_text_area.setVisible(False)
+                    self.terminal_toggle_btn.setText("▶ Agent Workspace")
+                    self.chat_splitter.setSizes([1, 0])
         elif event.type == "TASK_FAILED":
             err = event.payload.get("error", "Unknown error")
             if panel:
@@ -1487,12 +1496,19 @@ class ScratchpadWindow(QMainWindow):
             # Update task state: Idle if no more tasks, else still executing
             if self._active_task_count == 0:
                 self.task_state_label.setText("● Task: Idle")
+                # Collapse terminal when no more active tasks
+                if self.terminal_text_area.isVisible():
+                    self.terminal_text_area.setVisible(False)
+                    self.terminal_toggle_btn.setText("▶ Agent Workspace")
+                    self.chat_splitter.setSizes([1, 0])
 
         # Handle shell events from ToolExecutor (SHELL_COMMAND, SHELL_OUTPUT, SHELL_EXIT)
         if event.type in {"SHELL_COMMAND", "SHELL_OUTPUT", "SHELL_EXIT"}:
             if not self.terminal_text_area.isVisible():
                 self.terminal_text_area.setVisible(True)
                 self.terminal_toggle_btn.setText("▼ Agent Workspace")
+                # Allocate space for terminal in splitter
+                self.chat_splitter.setSizes([1, 200])
             
             if event.type == "SHELL_COMMAND":
                 cmd = event.payload.get("command", "")
@@ -1538,24 +1554,45 @@ class ScratchpadWindow(QMainWindow):
             assistant_status = "Task failed"
             agent_status = "Error"
         
+        # Compact rendering - summary only, steps on hover/expand
+        step_count = len(panel["steps"])
+        running_steps = sum(1 for s in panel["steps"] if s["status"] == "running")
+        completed_steps = sum(1 for s in panel["steps"] if s["status"] == "success")
+        failed_steps = sum(1 for s in panel["steps"] if s["status"] == "error")
+        pending_steps = sum(1 for s in panel["steps"] if s["status"] == "pending_approval")
+        
+        step_summary = f"{completed_steps}/{step_count} steps"
+        if running_steps:
+            step_summary += f" • {running_steps} running"
+        if pending_steps:
+            step_summary += f" • {pending_steps} pending"
+        if failed_steps:
+            step_summary += f" • {failed_steps} failed"
+        
         rendered = [
             f"<b>Task ({status}):</b> {description}",
-            f"<div style='margin-top:5px;padding:5px;background:#1a1b26;border-radius:4px;'>",
-            f"  <span style='color:#7aa2f7;'><b>Assistant:</b> {html.escape(assistant_status)}</span><br>",
-            f"  <span style='color:#50fa7b;'><b>Agent:</b> {html.escape(agent_status)}</span>",
+            f"<div style='margin-top:4px;padding:4px;background:#1a1b26;border-radius:4px;font-size:11px;'>",
+            f"  <span style='color:#7aa2f7;'><b>Assistant:</b> {html.escape(assistant_status)}</span> &nbsp;|&nbsp;",
+            f"  <span style='color:#50fa7b;'><b>Agent:</b> {html.escape(agent_status)}</span> &nbsp;|&nbsp;",
+            f"  <span style='color:#f1fa8c;'><b>Progress:</b> {step_summary}</span>",
             f"</div>",
-            "<ul style='list-style-type:none;padding-left:10px;margin-top:5px;'>"
         ]
-        for step in panel["steps"]:
-            icon = {
-                "success": "✅",
-                "error": "❌",
-                "pending_approval": "⚠️",
-            }.get(step["status"], "⏳")
-            rendered.append(f"<li>{icon} {html.escape(str(step['name']))}</li>")
-        if panel.get("error"):
-            rendered.append(f"<li>❌ {html.escape(str(panel['error']))}</li>")
-        rendered.append("</ul>")
+        
+        # Only show step details if there are pending approvals or errors
+        if pending_steps > 0 or failed_steps > 0:
+            rendered.append("<details style='margin-top:4px;'><summary style='cursor:pointer;color:#f1fa8c;font-size:11px;'>▸ Show step details</summary>")
+            rendered.append("<ul style='list-style-type:none;padding-left:10px;margin-top:2px;'>")
+            for step in panel["steps"]:
+                icon = {
+                    "success": "✅",
+                    "error": "❌",
+                    "pending_approval": "⚠️",
+                }.get(step["status"], "⏳")
+                rendered.append(f"<li style='font-size:11px;'>{icon} {html.escape(str(step['name']))}</li>")
+            if panel.get("error"):
+                rendered.append(f"<li style='font-size:11px;color:#ff5555;'>❌ {html.escape(str(panel['error']))}</li>")
+            rendered.append("</ul></details>")
+        
         panel["bubble"].text_display.setHtml("".join(rendered))
 
     def closeEvent(self, event):
@@ -1662,6 +1699,8 @@ class ScratchpadWindow(QMainWindow):
         self.voice_assistant_btn.setChecked(False)
         self.voice_assistant_btn.setText("🎤 Voice Assistant")
         self._update_connection_state("error")
+        self.voice_state_label.setText("● Voice: Error")
+        self.voice_state_label.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 11px; margin-left: 10px;")
         if hasattr(self, "assistant_state_label"):
             self.assistant_state_label.setText("🔴 Voice error")
         self.add_system_message_to_feed(f"Voice assistant error: {message}", is_error=True)

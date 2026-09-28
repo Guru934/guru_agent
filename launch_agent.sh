@@ -45,13 +45,26 @@ main() {
         echo "Guru Agent not running, visibility-only toggle ignored"
         exit 0
     elif [[ "$cmd" == "voice" ]]; then
-        # F2: voice - start agent and toggle voice
+        # F2: voice - start agent and toggle voice (WAKE, not toggle)
         echo "Starting Guru Agent for voice..."
         cd "$AGENT_DIR"
         exec "$PYTHON" "$APP_SCRIPT" &
-        # Give it a moment to start, then trigger voice toggle
-        sleep 1
-        trigger_toggle "$VOICE_TOGGLE_FILE"
+        
+        # Wait for agent to be ready by polling for voice toggle file
+        # The Qt app creates the voice toggle file watcher on startup
+        local max_wait=10
+        local waited=0
+        while [[ ! -f "$VOICE_TOGGLE_FILE" && $waited -lt $max_wait ]]; do
+            sleep 0.5
+            waited=$((waited + 1))
+        done
+        
+        if [[ -f "$VOICE_TOGGLE_FILE" ]]; then
+            trigger_toggle "$VOICE_TOGGLE_FILE"
+        else
+            echo "Warning: Voice toggle file not found after ${max_wait}s, triggering anyway"
+            trigger_toggle "$VOICE_TOGGLE_FILE"
+        fi
     else
         # F1: launch or toggle visibility - start if not running
         echo "Starting Guru Agent..."

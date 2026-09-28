@@ -84,13 +84,13 @@ python app.py
 | **Super+F** | Compositor fullscreen (Hyprland) |
 
 ## Voice Assistant Usage
-
-1. **Start**: Press **F2** (global hotkey, works when window hidden/tiled/fullscreen)
-2. **Speak**: Assistant listens (🔴 Listening indicator)
-3. **Auto-sleep**: After 8s silence or when response completes
-4. **Next command**: Press **F2** again
-
-No push-to-talk button — F2 is a global background hotkey via `/tmp/guru_agent_voice_toggle` file watcher.
+ 
+ 1. **Start**: Press **F2** (global hotkey, works when window hidden/tiled/fullscreen)
+ 2. **Speak**: Assistant listens (🔴 Listening indicator)
+ 3. **Auto-sleep**: After 50s silence or when response completes
+ 4. **Next command**: Press **F2** again
+ 
+ No push-to-talk button — F2 is a global background hotkey via `/tmp/guru_agent_voice_toggle` file watcher.
 
 ## Project Structure
 

@@ -30,7 +30,7 @@ All core architecture phases implemented and verified with **99 tests passing**.
 1. **Fast** — Trusted capabilities (`open_application`, `open_website`, `set_volume`, `set_brightness`, `get_clipboard`, `search_and_play_youtube`)
 2. **Heavy** — `AgentRuntime` with full tool access (shell, files, browser, vision)
 
-**Voice Model**: F2 global hotkey → Sleeping → Listening → Thinking → Speaking → Sleeping (8s auto-sleep)
+**Voice Model**: F2 global hotkey → Sleeping → Listening → Thinking → Speaking → Sleeping (50s auto-sleep)
 
 ### Validation
 
