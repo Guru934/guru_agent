@@ -1,7 +1,16 @@
 from typing import Dict, Any, Callable, Optional
 from dataclasses import dataclass
+from tools.coding import (
+    coding_read_file,
+    git_diff,
+    git_status,
+    list_files,
+    replace_in_file,
+    run_command,
+    search as search_project,
+)
 from tools.shell import execute_bash_command, ripgrep_search_impl
-from tools.filesystem import read_file, write_file_content
+from tools.filesystem import write_file_content
 from tools.desktop import (
     open_application, open_website, set_volume, set_brightness,
     get_clipboard, search_and_play_youtube, handle_desktop_action
@@ -131,13 +140,17 @@ registry.register(ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
-            "path": {"type": "string"}
+            "path": {"type": "string"},
+            "start_line": {"type": "integer"},
+            "end_line": {"type": "integer"},
         },
         "required": ["path"],
         "additionalProperties": False,
     },
     risk="low",
-    handler=lambda path, _workspace_dir=None: read_file(path, _workspace_dir)
+    handler=lambda path, start_line=None, end_line=None, _workspace_dir=None: coding_read_file(
+        path, start_line, end_line, _workspace_dir
+    )
 ))
 
 registry.register(ToolSpec(
@@ -146,13 +159,87 @@ registry.register(ToolSpec(
     input_schema={
         "type": "object",
         "properties": {
-            "query": {"type": "string"}
+            "query": {"type": "string"},
+            "path": {"type": "string"},
+            "glob": {"type": "string"},
         },
         "required": ["query"],
         "additionalProperties": False,
     },
     risk="low",
-    handler=lambda query, _workspace_dir=None: ripgrep_search_impl(query, _workspace_dir)
+    handler=lambda query, path=None, glob=None, _workspace_dir=None: search_project(
+        query, path, glob, _workspace_dir
+    )
+))
+
+registry.register(ToolSpec(
+    name="list_files",
+    description="List files in the active project using a relative glob pattern.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "glob": {"type": "string"},
+            "max": {"type": "integer"},
+        },
+        "required": ["glob"],
+        "additionalProperties": False,
+    },
+    risk="low",
+    handler=lambda glob, max=200, _workspace_dir=None: list_files(glob, max, _workspace_dir),
+))
+
+registry.register(ToolSpec(
+    name="replace_in_file",
+    description="Replace exactly one occurrence of text in an active-project file.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "old": {"type": "string"},
+            "new": {"type": "string"},
+        },
+        "required": ["path", "old", "new"],
+        "additionalProperties": False,
+    },
+    risk="medium",
+    handler=lambda path, old, new, _workspace_dir=None: replace_in_file(
+        path, old, new, _workspace_dir
+    ),
+))
+
+registry.register(ToolSpec(
+    name="git_status",
+    description="Return structured Git status for the active project.",
+    input_schema={"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+    risk="low",
+    handler=lambda _workspace_dir=None: git_status(_workspace_dir),
+))
+
+registry.register(ToolSpec(
+    name="git_diff",
+    description="Return a bounded Git diff for the active project.",
+    input_schema={"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+    risk="low",
+    handler=lambda _workspace_dir=None: git_diff(_workspace_dir),
+))
+
+registry.register(ToolSpec(
+    name="run_command",
+    description="Run an argv command in an explicitly selected active-project directory.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "cwd": {"type": "string"},
+            "timeout": {"type": "number"},
+        },
+        "required": ["argv", "cwd", "timeout"],
+        "additionalProperties": False,
+    },
+    risk="high",
+    handler=lambda argv, cwd, timeout, _workspace_dir=None: run_command(
+        argv, cwd, timeout, _workspace_dir
+    ),
 ))
 
 registry.register(ToolSpec(

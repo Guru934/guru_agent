@@ -3,14 +3,14 @@
 
 ## Current Milestone
 
-**M1 — Repo Awareness**
+**M2 — Coding Tools**
 
 Status: ✅ COMPLETE
 
 ## Current Objective
 
-Select and persist the repository used by delegated coding tasks without ever
-falling back to Guru Agent's own source tree.
+Provide repository-aware coding tools through ToolExecutor, PolicyEngine,
+Approval, and Capability while keeping operations scoped to the active project.
 
 ## M0 — Stabilize: COMPLETE
 
@@ -93,6 +93,22 @@ M0 is complete only when:
   (9 subtests passed). The only warning is the installed `google-genai`
   deprecation warning.
 
+## M1 — Repo Awareness: COMPLETE
+
+## M2 — Coding Tools: COMPLETE
+
+- Added `ToolResult` and active-project tools for file listing, ranged reads,
+  ripgrep search, exact-match replacement, Git status/diff, and argv-based
+  commands. Tools remain behind ToolExecutor and PolicyEngine.
+- Focused M2 verification: **23 passed, 1 skipped** (7 subtests passed).
+- Full verification: `QT_QPA_PLATFORM=offscreen python -m pytest -q` —
+  **142 passed, 2 skipped** (16 subtests passed). The only warning is the
+  installed `google-genai` deprecation warning.
+- The protected-source hard-link listing test was skipped because this
+  environment's filesystem did not permit creating the test hard link. The
+  test reports this reason explicitly. M0 protected-path hard-link behavior
+  remains covered by the existing security checks.
+
 ## Current Architecture
 
 ```text
@@ -118,6 +134,6 @@ current implementation.
 
 ## Next Milestone
 
-**M2 — Coding Tools**
+**M3 — Vertical Slice**
 
 Status: NOT STARTED

@@ -7,6 +7,7 @@ from agent.policy import engine as policy_engine
 from agent.approvals import manager as approval_manager
 from agent.events import emit
 from agent.tool_registry import validate_arguments
+from agent.tool_result import ToolResult
 
 @dataclass
 class ExecutionResult:
@@ -121,8 +122,9 @@ class ToolExecutor:
                 call_kwargs["_workspace_dir"] = context.get("workspace_dir")
                 
             res = func(**call_kwargs)
-            emit("TOOL_FINISHED", task_id, {"tool_name": tool_name, "status": "success", "output": str(res)[:500]})
-            return ExecutionResult("success", res)
+            status = "success" if not isinstance(res, ToolResult) or res.ok else "error"
+            emit("TOOL_FINISHED", task_id, {"tool_name": tool_name, "status": status, "output": str(res)[:500]})
+            return ExecutionResult(status, res)
         except Exception as error:
             emit("TOOL_FINISHED", task_id, {"tool_name": tool_name, "status": "error", "error": str(error)})
             return ExecutionResult("error", str(error))

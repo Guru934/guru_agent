@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import json
 import logging
 import shlex
 from dataclasses import dataclass
@@ -34,15 +35,20 @@ class PolicyEngine:
     def _log_audit(self, tool_name: str, arguments: dict, target_risk: str, decision: PolicyDecision) -> bool:
         try:
             argument_summary = {}
-            if "path" in arguments:
-                argument_summary["path"] = str(arguments["path"])[:500]
+            for field in ("path", "cwd", "glob"):
+                if field in arguments:
+                    argument_summary[field] = str(arguments[field])[:500]
             if "content" in arguments:
                 argument_summary["content_length"] = len(str(arguments["content"]))
-            for field in ("command", "query", "request"):
+            for field in ("command", "query", "request", "old", "new"):
                 if field in arguments:
                     argument_summary[f"{field}_sha256"] = hashlib.sha256(
                         str(arguments[field]).encode("utf-8")
                     ).hexdigest()
+            if "argv" in arguments:
+                argument_summary["argv_sha256"] = hashlib.sha256(
+                    json.dumps(arguments["argv"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
             timestamp = datetime.datetime.now().isoformat()
             log_line = (
                 f"[{timestamp}] TOOL={tool_name} RISK={target_risk} "
@@ -181,7 +187,23 @@ class PolicyEngine:
             return decision
 
         risk = spec.risk
-        if context.get("require_project") and not workspace_root and tool_name in {
+        project_only_tools = {"list_files", "replace_in_file", "git_status", "git_diff", "run_command"}
+        if (
+            workspace_root
+            and tool_name in project_only_tools | {"read_file", "search", "write_file", "execute_shell"}
+            and (Path(workspace_root).resolve() == APP_DIR.resolve()
+                 or Path(workspace_root).resolve().is_relative_to(APP_DIR.resolve()))
+        ):
+            decision = PolicyDecision(
+                False, False, "critical",
+                "Guru Agent's source tree cannot be used as a coding project workspace.",
+            )
+        elif tool_name in project_only_tools and not workspace_root:
+            decision = PolicyDecision(
+                False, False, "critical",
+                f"{tool_name} requires the active project workspace.",
+            )
+        elif context.get("require_project") and not workspace_root and tool_name in {
             "execute_shell", "read_file", "write_file", "search"
         }:
             decision = PolicyDecision(
@@ -217,6 +239,61 @@ class PolicyEngine:
                 )
             else:
                 decision = PolicyDecision(True, False, risk, "Low-risk action allowed.")
+        elif tool_name == "search":
+            path = arguments.get("path") or "."
+            if not self._is_path_allowed(path, cwd, workspace_root):
+                decision = PolicyDecision(
+                    False, False, "critical",
+                    f"Search path {path!r} is outside the active workspace.",
+                )
+            else:
+                decision = PolicyDecision(True, False, risk, "Search is confined to the active workspace.")
+        elif tool_name == "replace_in_file":
+            path = arguments.get("path", "")
+            if self._is_protected_path(path, cwd):
+                decision = PolicyDecision(
+                    False, False, "critical",
+                    f"Path {path!r} is protected from modification by Guru Agent tools.",
+                )
+            elif not self._is_path_allowed(path, cwd, workspace_root):
+                decision = PolicyDecision(
+                    False, False, "critical",
+                    f"Path {path!r} is outside the active project workspace.",
+                )
+            else:
+                decision = PolicyDecision(
+                    True, self.safe_mode, risk,
+                    "Safe mode requires manual approval for repository file replacement."
+                    if self.safe_mode else "Repository file replacement allowed by policy.",
+                )
+        elif tool_name in {"list_files", "git_status", "git_diff"}:
+            if not self._is_path_allowed(".", cwd, workspace_root):
+                decision = PolicyDecision(False, False, "critical", "The active project workspace is invalid.")
+            else:
+                decision = PolicyDecision(True, False, risk, "Read-only project operation allowed.")
+        elif tool_name == "run_command":
+            command_cwd = arguments.get("cwd", "")
+            argv = arguments.get("argv", [])
+            resolved_cwd = Path(command_cwd).expanduser()
+            if not resolved_cwd.is_absolute():
+                resolved_cwd = cwd / resolved_cwd
+            if not self._is_path_allowed(command_cwd, cwd, workspace_root):
+                decision = PolicyDecision(
+                    False, False, "critical",
+                    "run_command cwd must remain inside the active project workspace.",
+                )
+            elif not resolved_cwd.resolve().is_dir():
+                decision = PolicyDecision(False, False, "critical", "run_command cwd must be an existing directory.")
+            elif not isinstance(argv, list) or not argv or not isinstance(argv[0], str) or not argv[0]:
+                decision = PolicyDecision(False, False, "critical", "run_command argv must include an executable.")
+            elif Path(argv[0]).name.lower() in self.blocked_executables:
+                decision = PolicyDecision(False, False, "critical", "run_command executable is blocked by policy.")
+            else:
+                decision = PolicyDecision(
+                    True, self.safe_mode, risk,
+                    "run_command requires explicit approval in safe mode."
+                    if self.safe_mode else "run_command allowed because safe mode is disabled.",
+                )
         else:
             decision = PolicyDecision(
                 True,
