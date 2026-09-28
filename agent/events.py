@@ -6,7 +6,7 @@ import threading
 
 @dataclass
 class AgentEvent:
-    type: str # e.g. "TASK_STARTED", "TOOL_REQUESTED", "APPROVAL_REQUIRED", "TOOL_STARTED", "TOOL_FINISHED", "TASK_FAILED", "TASK_COMPLETED", "LOG"
+    type: str # e.g. "TASK_STARTED", "TOOL_REQUESTED", "APPROVAL_REQUIRED", "TOOL_STARTED", "TOOL_FINISHED", "TASK_BLOCKED", "TASK_FAILED", "TASK_COMPLETED", "LOG"
     task_id: str
     payload: Dict[str, Any]
     timestamp: str = ""

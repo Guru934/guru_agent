@@ -375,6 +375,11 @@ class AgentHardeningTests(unittest.TestCase):
     def test_concurrent_approvals_isolated(self):
         """Test that multiple concurrent approval requests are isolated."""
         # Use write_file which requires approval in safe mode but is faster than shell
+        approval_dir = tempfile.TemporaryDirectory()
+        approval_root = Path(approval_dir.name)
+        WORKSPACE_ROOTS.append(approval_root)
+        self.addCleanup(approval_dir.cleanup)
+        self.addCleanup(WORKSPACE_ROOTS.remove, approval_root)
         results = {}
         ready_events = {"task-1": threading.Event(), "task-2": threading.Event()}
         
@@ -389,8 +394,8 @@ class AgentHardeningTests(unittest.TestCase):
             results[task_id] = result
         
         # Start two concurrent approval requests
-        thread1 = threading.Thread(target=request_approval, args=("task-1", "test_concurrent_1.txt"))
-        thread2 = threading.Thread(target=request_approval, args=("task-2", "test_concurrent_2.txt"))
+        thread1 = threading.Thread(target=request_approval, args=("task-1", str(approval_root / "test_concurrent_1.txt")))
+        thread2 = threading.Thread(target=request_approval, args=("task-2", str(approval_root / "test_concurrent_2.txt")))
         
         thread1.start()
         thread2.start()
@@ -425,12 +430,6 @@ class AgentHardeningTests(unittest.TestCase):
         self.assertIn("success", statuses)
         self.assertIn("approval_timeout", statuses)
         
-        # Cleanup
-        for f in ["test_concurrent_1.txt", "test_concurrent_2.txt"]:
-            p = APP_DIR / f
-            if p.exists():
-                p.unlink()
-
     def test_approval_after_task_cancellation_rejected(self):
         """Test that approval for a cancelled task is rejected."""
         executor = ToolExecutor(registry, approval_timeout=5)
@@ -574,7 +573,7 @@ class AgentHardeningTests(unittest.TestCase):
         executor = ToolExecutor(registry)
         
         # This should go through validation and policy
-        result = executor.execute("read_file", {"path": "README.md"}, {"task_id": "direct-test"})
+        result = executor.execute("read_file", {"path": "config.py"}, {"task_id": "direct-test"})
         self.assertEqual(result.status, "success")
         
         # Invalid args should be caught
@@ -1207,6 +1206,18 @@ class Phase10EventBridgeTests(unittest.TestCase):
         self.assertTrue(len(events) > 0)
         self.assertEqual(events[0].risk, "critical")
         self.assertIn("failed", events[0].summary.lower())
+
+    def test_task_blocked_emits_task_blocked(self):
+        from agent.events import emit
+
+        emit("TASK_BLOCKED", "test-task-blocked", {"reason": "Impossible task"})
+        import time
+        time.sleep(0.2)
+
+        events = [e for e in self.received_events if e.type == "task_blocked"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].task_id, "test-task-blocked")
+        self.assertIn("Impossible task", events[0].summary)
 
 
 class Phase10ConcurrencyTests(unittest.TestCase):

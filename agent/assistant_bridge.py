@@ -161,6 +161,27 @@ class AssistantBridge:
                 summary=f"Task completed: {result[:150]}" if result else "Task completed",
                 progress=result[:200] if result else None,
             ))
+
+        elif event.type == "TASK_BLOCKED":
+            reason = event.payload.get("reason", "Task is blocked.")
+            with self._lock:
+                if task_id in self.active_tasks:
+                    task = self.active_tasks.pop(task_id)
+                    task.status = "blocked"
+                    task.error = reason
+                    self.task_history.append({
+                        "task_id": task_id,
+                        "description": task.description,
+                        "status": "blocked",
+                        "error": reason,
+                        "completed_at": datetime.now().isoformat(),
+                    })
+            self._emit_assistant_event(AssistantEvent(
+                type="task_blocked",
+                task_id=task_id,
+                summary=f"Task blocked: {reason}",
+                risk="high",
+            ))
             
         elif event.type == "TASK_FAILED":
             error = event.payload.get("error", "Unknown error")

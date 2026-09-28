@@ -1645,8 +1645,8 @@ class ScratchpadWindow(QMainWindow):
             # Show approval request in chat (important for user action)
             msg = f"⚠️ **Approval Required**\nTask: {event.summary}\nRisk: {event.risk}\nApproval ID: {event.approval_id}"
             self.add_system_message_to_feed(msg, is_error=False)
-        # task_started, task_completed, task_failed, tool_progress -> only update status bar, NOT chat
-        # (they already update task_state_label in on_agent_event)
+        # Task status and tool detail remain available to the UI/terminal. The
+        # Gemini Live provider forwards only task milestones.
         
         # Also forward to Gemini Live if connected
         if self.live_agent:

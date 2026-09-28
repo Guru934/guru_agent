@@ -8,7 +8,7 @@ from typing import Sequence
 
 from agent.tool_registry import registry
 from agent.capabilities import registry as capability_registry
-from config import APP_DIR, USER_STATE_DIR
+from config import APP_DIR, DB_PATH, USER_STATE_DIR
 from tools.workspace import resolve_workspace_path
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,39 @@ class PolicyEngine:
         except (OSError, RuntimeError, ValueError):
             logger.exception("Unable to resolve path during workspace policy evaluation.")
             return False
+
+    @staticmethod
+    def _is_protected_path(path_str: str, cwd: Path = APP_DIR) -> bool:
+        """Return whether a write target is part of Guru Agent's live installation/state."""
+        try:
+            target = Path(path_str).expanduser()
+            if not target.is_absolute():
+                target = cwd / target
+            target = target.resolve()
+            source_root = APP_DIR.resolve()
+            protected_files = (
+                DB_PATH.resolve(),
+                (USER_STATE_DIR / "security_audit.log").resolve(),
+            )
+            if target == source_root or target.is_relative_to(source_root):
+                return True
+            if target in protected_files:
+                return True
+            if target.exists():
+                # Without scanning the full source tree, reject writes through
+                # any hard link so a source inode cannot be reached elsewhere.
+                if target.stat().st_nlink > 1:
+                    return True
+                # Also catch alternate hard-link paths for protected state files.
+                return any(
+                    target.samefile(protected_file)
+                    for protected_file in protected_files
+                    if protected_file.exists()
+                )
+            return False
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Unable to resolve path during protected-path evaluation.")
+            return True
 
     @staticmethod
     def _has_shell_operators(command: str) -> bool:
@@ -137,9 +170,14 @@ class PolicyEngine:
         risk = spec.risk
         if tool_name == "execute_shell":
             decision = self._evaluate_shell(str(arguments.get("command", "")), risk)
-        elif tool_name in {"write_file", "read_file"}:
+        elif tool_name == "write_file":
             path = arguments.get("path", "")
-            if not self._is_path_allowed(path):
+            if self._is_protected_path(path):
+                decision = PolicyDecision(
+                    False, False, "critical",
+                    f"Path {path!r} is protected from modification by Guru Agent tools."
+                )
+            elif not self._is_path_allowed(path):
                 decision = PolicyDecision(
                     False, False, "critical",
                     f"Path {path!r} is outside the allowed workspace roots."
@@ -150,6 +188,15 @@ class PolicyEngine:
                 )
             else:
                 decision = PolicyDecision(True, False, risk, f"{risk.capitalize()}-risk action allowed.")
+        elif tool_name == "read_file":
+            path = arguments.get("path", "")
+            if not self._is_path_allowed(path):
+                decision = PolicyDecision(
+                    False, False, "critical",
+                    f"Path {path!r} is outside the allowed workspace roots."
+                )
+            else:
+                decision = PolicyDecision(True, False, risk, "Low-risk action allowed.")
         else:
             decision = PolicyDecision(
                 True,

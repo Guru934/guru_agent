@@ -483,16 +483,7 @@ class GeminiDesktopAgent:
                             while not self.stop_event.is_set():
                                 try:
                                     action = await self.synthetic_input_queue.get()
-                                    if action == "HEAVY_AGENT_DONE":
-                                        async with send_lock:
-                                            await session.send_client_content(
-                                                turns=types.Content(
-                                                    role="user",
-                                                    parts=[types.Part(text="The heavy agent has just finished its delegated task! Briefly let the user know verbally.")],
-                                                ),
-                                                turn_complete=True,
-                                            )
-                                    elif action == "ACTIVE_WINDOW":
+                                    if action == "ACTIVE_WINDOW":
                                         region = self.vision.get_active_window_region()
                                         frame = self.vision.capture_frame(region=region)
                                         if frame:
@@ -771,6 +762,8 @@ class GeminiDesktopAgent:
 
     def inject_agent_event(self, event: AssistantEvent):
         """Inject an agent event into the Gemini Live session as a system message."""
+        if not self._is_task_milestone_event(event):
+            return
         if not self.loop or self.stop_event.is_set():
             return
         
@@ -787,12 +780,12 @@ class GeminiDesktopAgent:
             )
         elif event.type == "task_started":
             message = f"SYSTEM: Execution agent started task: {event.summary}"
+        elif event.type == "task_blocked":
+            message = f"SYSTEM: Execution agent task is blocked: {event.summary}"
         elif event.type == "task_completed":
             message = f"SYSTEM: Execution agent completed task: {event.summary}"
         elif event.type == "task_failed":
             message = f"SYSTEM: Execution agent task failed: {event.summary}"
-        elif event.type == "tool_progress":
-            message = f"SYSTEM: Execution agent progress: {event.progress}"
         else:
             message = f"SYSTEM: Execution agent update: {event.summary}"
         
@@ -801,6 +794,19 @@ class GeminiDesktopAgent:
             self._inject_system_message_to_session(message),
             self.loop
         )
+
+    @staticmethod
+    def _is_task_milestone_event(event: AssistantEvent) -> bool:
+        return event.type in {
+            "task_started",
+            "started",
+            "approval_required",
+            "task_blocked",
+            "blocked",
+            "task_completed",
+            "done",
+            "task_failed",
+        }
 
     async def _inject_system_message(self, session, message: str):
         """Inject a non-realtime text turn into an active Live session."""

@@ -13,6 +13,7 @@ from agent.tool_registry import registry
 from agent.approvals import manager as approval_manager
 from agent.runtime import AgentRuntime
 from agent.state import TaskState
+from config import APP_DIR, DB_PATH
 
 class CoreEvaluationSuite(unittest.TestCase):
     """
@@ -92,6 +93,65 @@ class CoreEvaluationSuite(unittest.TestCase):
         )
         self.assertTrue(decision.allowed)
         self.assertFalse(decision.requires_approval) # low risk reads
+
+    def test_m0_policy_denies_writes_to_guru_source_tree(self):
+        decision = policy_engine.evaluate(
+            "write_file", {"path": str(APP_DIR / "config.py"), "content": "changed"}, {}
+        )
+        self.assertFalse(decision.allowed)
+        self.assertIn("protected", decision.reason.lower())
+
+    def test_m0_policy_allows_writes_to_another_workspace_root(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            from config import WORKSPACE_ROOTS
+            WORKSPACE_ROOTS.append(Path(workspace))
+            self.addCleanup(WORKSPACE_ROOTS.remove, Path(workspace))
+            decision = policy_engine.evaluate(
+                "write_file", {"path": str(Path(workspace) / "notes.txt"), "content": "ok"}, {}
+            )
+        self.assertTrue(decision.allowed)
+        self.assertTrue(decision.requires_approval)
+
+    def test_m0_policy_denies_source_file_hard_link_in_allowed_workspace(self):
+        from config import WORKSPACE_ROOTS
+
+        with tempfile.TemporaryDirectory(dir=APP_DIR) as source_dir:
+            with tempfile.TemporaryDirectory(dir=APP_DIR.parent) as workspace:
+                source_file = Path(source_dir) / "source_module.py"
+                hard_link = Path(workspace) / "source_module.py"
+                source_file.write_text("source content", encoding="utf-8")
+                try:
+                    os.link(source_file, hard_link)
+                except (OSError, NotImplementedError) as error:
+                    self.skipTest(f"Filesystem cannot create hard links: {error}")
+
+                workspace_root = Path(workspace)
+                WORKSPACE_ROOTS.append(workspace_root)
+                try:
+                    decision = policy_engine.evaluate(
+                        "write_file", {"path": str(hard_link), "content": "changed"}, {}
+                    )
+                finally:
+                    WORKSPACE_ROOTS.remove(workspace_root)
+
+        self.assertFalse(decision.allowed)
+        self.assertIn("protected", decision.reason.lower())
+
+    def test_m0_policy_denies_writes_to_history_database(self):
+        decision = policy_engine.evaluate(
+            "write_file", {"path": str(DB_PATH), "content": "changed"}, {}
+        )
+        self.assertFalse(decision.allowed)
+        self.assertIn("protected", decision.reason.lower())
+
+    def test_m0_policy_denies_writes_to_security_audit_log(self):
+        from config import USER_STATE_DIR
+        audit_path = USER_STATE_DIR / "security_audit.log"
+        decision = policy_engine.evaluate(
+            "write_file", {"path": str(audit_path), "content": "changed"}, {}
+        )
+        self.assertFalse(decision.allowed)
+        self.assertIn("protected", decision.reason.lower())
 
     def test_eval_06_executor_intercepts_denials(self):
         # Scenario: Bypass of policy directly into Executor yields trapped Denial result

@@ -4,7 +4,14 @@ from typing import Literal, Optional
 
 @dataclass
 class AssistantEvent:
-    type: Literal["task_started", "approval_required", "task_completed", "task_failed", "tool_progress"]
+    type: Literal[
+        "task_started",
+        "approval_required",
+        "task_blocked",
+        "task_completed",
+        "task_failed",
+        "tool_progress",
+    ]
     task_id: str
     summary: str
     risk: Literal["low", "medium", "high", "critical"] | None = None
