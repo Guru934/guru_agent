@@ -25,14 +25,13 @@ from pygments.formatters import HtmlFormatter
 from pygments.styles import get_style_by_name 
 
 from tools.browser import (
-    transcribe_audio_from_microphone,
     voice_input_status,
 )
 from utils import get_logger
 from memory.sqlite import get_sessions, get_messages, create_session, insert_message, update_session_title, get_sessions_with_counts, get_session_title_preview, get_preference, set_preference
 from providers import get_installed_models
 from ui.widgets import AutoResizingTextEdit, MarkdownTextBrowser, SessionRowWidget, DummyVisualizerEmitter, MessageBubble, AgentTerminal
-from ui.chat_view import AgentWorker, TranscriptionWorker
+from ui.chat_view import AgentWorker
 from ui.approval_dialog import ApprovalDialog
 from agent.capabilities import registry as capability_registry, CapabilityGrant
 from agent.planner import AgentOrchestrator
@@ -409,9 +408,6 @@ class ScratchpadWindow(QMainWindow):
         self.setStyleSheet(QSS_STYLES) 
         self.current_session_id: Optional[str] = None # Explicitly type as Optional[str]
         self.chat_history: List[Dict[str, Any]] = []
-        self.voice_in_progress = False
-        self.voice_worker: Optional[QThread] = None
-        self.voice_cancel_requested = False
 
         self._setup_toggle_watcher()
         
@@ -980,76 +976,7 @@ class ScratchpadWindow(QMainWindow):
             self.add_system_message_to_feed("Voice capture failed. Missing `arecord`, `ffmpeg`, or `sox`.", is_error=True)
             return
 
-        self.voice_start_time = datetime.datetime.now()
 
-    def on_voice_worker_finished(self, transcript: str):
-        if not self.voice_in_progress:
-            return
-
-        self.voice_in_progress = False
-        if self.voice_cancel_requested:
-            self.set_voice_button_state("idle")
-            self.add_system_message_to_feed("Voice capture cancelled.", is_error=False)
-            self.voice_cancel_requested = False
-            return
-
-        self.set_voice_button_state("idle")
-
-        clean_transcript = (transcript or "").strip()
-        if clean_transcript:
-            if clean_transcript.lower().startswith(("no microphone", "voice input", "speech-to-text", "transcription failed", "no valid", "no clear")):
-                self.add_system_message_to_feed(f"Voice status: {clean_transcript}", is_error=False)
-            else:
-                self.input_box.setPlainText(clean_transcript)
-                self.add_system_message_to_feed(f"Voice capture result: {clean_transcript}", is_error=False)
-                # Auto send to the assistant flow!
-                self.send_message()
-        else:
-            self.add_system_message_to_feed("Voice capture ended without a transcript.", is_error=False)
-
-
-    def finish_voice_capture(self, force_cancel: bool = False):
-        # If voice assistant is active, route to Gemini Live
-        if self.voice_assistant_active and self.live_agent:
-            self.live_agent.is_recording = False
-            self.live_agent.set_mic_muted(True)  # Mute mic when released
-            self.set_voice_button_state("idle")
-            self.voice_in_progress = False
-            return
-            
-        if not self.voice_in_progress:
-
-            return
-
-        from tools.browser import stop_continuous_recording
-
-        if hasattr(self, 'voice_recording_proc'):
-            stop_continuous_recording(self.voice_recording_proc)
-
-        start_time = getattr(self, 'voice_start_time', datetime.datetime.now())
-        elapsed = (datetime.datetime.now() - start_time).total_seconds()
-
-        if force_cancel or elapsed < 0.5:
-            self.voice_cancel_requested = True
-            self.voice_in_progress = False
-            self.set_voice_button_state("idle")
-            self.add_system_message_to_feed("Voice capture cancelled (held too briefly).", is_error=False)
-            return
-
-        self.set_voice_button_state("processing")
-        self.voice_in_progress = False
-
-        audio_path = getattr(self, 'voice_audio_path', None)
-        if not audio_path:
-            self.add_system_message_to_feed("Voice capture failed: no audio file was generated.", is_error=True)
-            return
-
-        self.transcription_worker = TranscriptionWorker(audio_path=audio_path)
-        self.transcription_worker.finished_signal.connect(self.on_voice_worker_finished)
-        self.transcription_worker.start()
-
-    def on_voice_status_clicked(self):
-        self.start_voice_capture()
     def on_screen_snapshot_clicked(self):
         self.input_box.setPlainText("Describe what's on screen.")
         self.send_message()
@@ -1107,9 +1034,7 @@ class ScratchpadWindow(QMainWindow):
             enable_tools = True
             route_context += "\nFor this request, use the describe_current_screen tool."
 
-        if text.lower().startswith("transcribe ") or "listen" in text.lower():
-            self.add_system_message_to_feed(f"Voice capture result: {transcribe_audio_from_microphone(record_seconds=4)}", is_error=False)
-            return
+        
 
         # Auto-create session if none
         if self.current_session_id is None:
@@ -1122,7 +1047,8 @@ class ScratchpadWindow(QMainWindow):
             route_note = {"role": "system", "content": route_context}
             if route_note not in self.chat_history:
                 self.chat_history.append(route_note)
-                insert_message(self.current_session_id, "system", route_context)
+            # Route context is conversation context only, NOT persisted to SQLite
+            # Only user/assistant messages go to SQLite conversation DB
 
         self.input_box.clear()
         session_id = self.current_session_id
@@ -1370,7 +1296,6 @@ class ScratchpadWindow(QMainWindow):
             # Increment active task count and show workspace
             self._active_task_count += 1
             pass # Removed auto-show for context based logic
-            self._append_to_workspace(f"[Task Started] {desc}")
             return
 
         panel = self.task_panels.get(task_id)
@@ -1474,7 +1399,6 @@ class ScratchpadWindow(QMainWindow):
             # Decrement active task count and update workspace
             self._active_task_count = max(0, self._active_task_count - 1)
             self._update_workspace_visibility()
-            self._append_to_workspace("[Task Completed]")
             # Update heavy agent status: Idle if no more tasks, else still executing
             if self._active_task_count == 0:
                 self.task_state_label.setText("● Task: Idle")
@@ -1492,7 +1416,6 @@ class ScratchpadWindow(QMainWindow):
             # Decrement active task count and update workspace
             self._active_task_count = max(0, self._active_task_count - 1)
             self._update_workspace_visibility()
-            self._append_to_workspace(f"[Task Failed] {err}")
             # Update task state: Idle if no more tasks, else still executing
             if self._active_task_count == 0:
                 self.task_state_label.setText("● Task: Idle")
@@ -1604,10 +1527,6 @@ class ScratchpadWindow(QMainWindow):
             worker.cancel()
         self.agent_listener.close()
         super().closeEvent(event)
-
-    @pyqtSlot()
-    def finish_voice_capture_sig(self):
-        self.finish_voice_capture(force_cancel=False)
 
     def toggle_voice_assistant(self):
         """Toggle the Gemini Live voice assistant on/off."""

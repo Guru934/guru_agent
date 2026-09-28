@@ -373,18 +373,19 @@ class GeminiDesktopAgent:
                             if text_callback:
                                 text_callback("system", "Gemini Live Connected!")
                             self._has_connected_once = True
-                        # Only set voice state to sleeping if not already in an active state
-                        # (e.g., if wake_voice() was called before connection completed)
-                        if self.voice_state.state == "sleeping":
-                            self.voice_state.set_state("sleeping")
+                        # On first connect, enter LISTENING state so user can speak after greeting
+                        # (mic will be muted while model is speaking via is_playing check)
+                        if not is_reconnect:
+                            self.voice_state.set_state("listening")
+                        else:
+                            # On reconnect, stay in current state or default to sleeping
+                            if self.voice_state.state == "sleeping":
+                                self.voice_state.set_state("sleeping")
                         self._set_glow(glow_callback, "connected")
                         self._set_connection_state("connected")
                         
                         # Reset reconnect attempts on successful connection
                         self._reconnect_attempts = 0
-
-                        # On reconnect: silent - no greeting, no chat message
-                        # Connection state update is handled by _set_connection_state
 
                         # On first connect: trigger spoken greeting by sending user turn
                         if not is_reconnect:
