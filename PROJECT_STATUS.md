@@ -159,8 +159,24 @@ The full coding-agent loop shown in `ROADMAP.md` remains planned work. The
 deterministic repository verifier is implemented; coding actions are not
 automatically reflected or retried by it.
 
-## Next Milestone
+## M5 — CodingAgentLoop: IN PROGRESS
 
-**M5 — CodingAgentLoop**
+### Chunk 1 — Task data model: COMPLETE
 
-Status: NOT STARTED
+- `agent/coding_task.py` — `Status`, `PlanStep`, `Budget`, `CodingTask`
+- `tests/test_m5_coding_task.py`
+- `Budget.is_exhausted() -> tuple[bool, str]` checks
+  action → wall time → tokens, in that order
+- Wall-time uses `time.monotonic()`
+- Counters record overflow without raising; exhaustion is reported,
+  not thrown
+- `CodingTask.verification_results` typed against M4's `Verdict`
+- No persistence, no loop, no verifier changes, no scope creep
+- Commits: `beabd84`, `59e045d`
+- Verified: `QT_QPA_PLATFORM=offscreen python -m pytest -q tests/`
+  → 191 passed, 2 skipped, 21 subtests passed
+- Audited: no test deletions outside the reworked pair
+  (`test_cannot_exceed_max_total_action_steps`,
+  `test_cannot_exceed_configured_token_budget`)
+
+### Chunk 2 — Role interfaces + adversarial fakes: NEXT

@@ -211,9 +211,7 @@ Before editing, identify:
 
 ## Current Work
 
-M0 — Stabilize, M1 — Repo Awareness, M2 — Coding Tools, M3 — Vertical Slice,
-and M4 — Verifier are complete. M5 — CodingAgentLoop is next and is not
-started. Do not begin M5 unless explicitly requested.
-
-Follow `PROJECT_STATUS.md` for current milestone state and `ROADMAP.md` for
-milestone scope and acceptance criteria.
+M5 — CodingAgentLoop is in progress.
+Chunk 1 (task data model) is complete and committed (beabd84, 59e045d).
+Chunk 2 (role interfaces + adversarial fakes) is next.
+Do not skip chunk order. Do not modify Chunk 1 further.
