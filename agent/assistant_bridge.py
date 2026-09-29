@@ -10,6 +10,9 @@ from agent.approvals import manager as approval_manager
 from agent.capabilities import registry as capability_registry
 from agent.capabilities import CapabilityGrant
 from agent.assistant_events import AssistantEvent
+from agent.executor import ToolExecutor
+from agent.tool_registry import registry as tool_registry
+from agent.tool_result import ToolResult
 from memory.sqlite import get_active_project, set_active_project, validate_project_path
 
 
@@ -42,7 +45,7 @@ class ApprovalSummary:
 
 
 class AssistantBridge:
-    def __init__(self):
+    def __init__(self, tool_executor: Optional[ToolExecutor] = None):
         self.active_tasks: Dict[str, TaskSummary] = {}
         self.pending_approvals: Dict[str, ApprovalSummary] = {}
         self.task_history: deque = deque(maxlen=20)  # Recent task history
@@ -51,8 +54,17 @@ class AssistantBridge:
         self._gemini_live_ref = None
         self._subscribed_to_bus = False
         self._session_start_time = datetime.now()
-        
+        self._tool_executor = tool_executor
+
         self._subscribe_to_event_bus()
+
+    def _get_tool_executor(self) -> ToolExecutor:
+        if self._tool_executor is None:
+            self._tool_executor = ToolExecutor(tool_registry)
+        return self._tool_executor
+        # NOTE: shares module-level policy_engine singleton.
+        # If policy_engine becomes per-instance (M6 task-scoped grants),
+        # this must be rewired to receive the app's executor explicitly.
 
     def _subscribe_to_event_bus(self):
         if self._subscribed_to_bus:
@@ -520,11 +532,14 @@ class AssistantBridge:
             # Get git status if available
             git_info = ""
             try:
-                import subprocess
-                result = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], 
-                                      capture_output=True, text=True, cwd=workspace, timeout=2)
-                if result.returncode == 0:
-                    branch = result.stdout.strip()
+                executor = self._get_tool_executor()
+                result = executor.execute(
+                    "run_command",
+                    {"argv": ["git", "rev-parse", "--abbrev-ref", "HEAD"], "cwd": workspace, "timeout": 2},
+                    {"task_id": "assistant_bridge_context", "workspace_dir": workspace}
+                )
+                if result.status == "success" and isinstance(result.output, ToolResult) and result.output.ok:
+                    branch = result.output.details.strip()
                     git_info = f"Git branch: {branch}"
             except Exception:
                 pass
